@@ -44,6 +44,27 @@ English -> Mandarin -> Spanish   |    French -> Portuguese -> Italian  |
 </div>
 
 ## Preparation
+
+### Option 1: Google Colab (Recommended for beginners)
+
+For easy setup with GPU acceleration, use our [Google Colab Setup Guide](COLAB_SETUP_GUIDE.md):
+
+1. **Open Google Colab**: Go to [colab.research.google.com](https://colab.research.google.com)
+2. **Enable GPU**: Runtime → Change runtime type → GPU
+3. **Run setup commands**:
+```python
+!git clone https://github.com/mpc001/Visual_Speech_Recognition_for_Multiple_Languages
+%cd Visual_Speech_Recognition_for_Multiple_Languages
+!pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+!pip install -r requirements.txt
+!pip install mediapipe>=0.10.0 ibug-face-detection>=0.1.0 ibug-face-alignment>=0.1.0 ffmpeg-python>=0.2.0 tqdm>=4.60.0
+!apt-get update && apt-get install -y ffmpeg
+```
+4. **Download models** from [Model Zoo](#Model-Zoo)
+5. **Upload your videos** and run inference!
+
+### Option 2: Local Setup
+
 1. Clone the repository and enter it locally:
 
 ```Shell
@@ -71,6 +92,14 @@ conda install -c conda-forge ffmpeg
 - `./benchmarks/${dataset}/language_models`
 
 5. [For VSR and AV-ASR] Install [RetinaFace](./tools) or [MediaPipe](https://pypi.org/project/mediapipe/) tracker.
+
+### Quick Test
+
+After setup, run our test script to verify everything is working:
+
+```Shell
+python test_setup.py
+```
 
 ### Benchmark evaluation
 

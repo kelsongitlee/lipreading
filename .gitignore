@@ -1,8 +1,83 @@
-# Byte-compiled / optimized / DLL files
+# Virtual Environment
+autoavsr_env/
+venv/
+env/
+.env/
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth
+*.pt
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
 .idea/
-*.pyc
-*.tar
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Model files (too large for git)
+benchmarks/*/models/*.pth
+benchmarks/*/models/*.pt
+benchmarks/*/language_models/*.pth
+benchmarks/*/language_models/*.pt
+
+# Downloaded models
+*.zip
+*.tar.gz
+*.rar
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+
+# Audio files
+*.wav
+*.mp3
+*.m4a
+*.flac
