@@ -1,0 +1,4 @@
+# Additional dependencies for web server
+flask==2.3.3
+werkzeug==2.3.7
+gdown==4.7.1

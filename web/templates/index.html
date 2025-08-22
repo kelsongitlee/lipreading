@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="tabs">
+    <button class="tab active" onclick="switchTab('upload')">📁 Video Upload</button>
+    <button class="tab" onclick="switchTab('webcam')">📹 Webcam</button>
+</div>
+
+<!-- Video Upload Tab -->
+<div id="upload-tab" class="tab-content active">
+    <h2>Upload Video for Lip Reading</h2>
+    
+    <div class="upload-area" onclick="document.getElementById('videoFile').click()">
+        <div>📁 Click to select video file</div>
+        <div style="margin-top: 10px; color: #666;">Supported: MP4, AVI, MOV</div>
+    </div>
+    
+    <input type="file" id="videoFile" accept="video/*" onchange="handleVideoUpload(this)">
+    
+    <div class="controls">
+        <button class="btn" id="processBtn" onclick="processVideo()" disabled>
+            Process Video
+        </button>
+    </div>
+    
+    <div id="uploadStatus" class="status ready">Ready to upload video</div>
+    <div id="uploadResult" class="result-box">Results will appear here...</div>
+</div>
+
+<!-- Webcam Tab -->
+<div id="webcam-tab" class="tab-content">
+    <h2>Real-time Webcam Lip Reading</h2>
+    
+    <div class="webcam-container">
+        <video id="webcamVideo" class="video-element" autoplay muted></video>
+        <canvas id="webcamCanvas" class="video-element" style="display: none;"></canvas>
+    </div>
+    
+    <div class="indicators">
+        <div class="indicator">
+            <div id="recordIndicator" class="indicator-dot"></div>
+            <span id="recordStatus">Ready</span>
+        </div>
+        <div class="indicator">
+            <div id="faceIndicator" class="indicator-dot"></div>
+            <span>Face Detected</span>
+        </div>
+        <div class="indicator">
+            <div id="speakIndicator" class="indicator-dot"></div>
+            <span>Speaking</span>
+        </div>
+    </div>
+    
+    <div class="controls">
+        <button class="btn" id="startStopBtn" onclick="toggleRecording()">
+            Start Recording
+        </button>
+        <button class="btn" id="processCurrentBtn" onclick="processCurrentBuffer()" disabled>
+            Process Current Buffer
+        </button>
+    </div>
+    
+    <div id="webcamStatus" class="status ready">
+        Press "Start Recording" to begin. Record for 2-5 seconds, then stop to process.
+    </div>
+    <div id="webcamResult" class="result-box">Results will appear here...</div>
+</div>
+{% endblock %}
