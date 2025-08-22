@@ -1,0 +1,132 @@
+# ============================
+# Part 1: Setup (Colab)
+# ============================
+
+import os, subprocess, pathlib, shutil
+
+REPO_URL = "https://github.com/kelsongitlee/lipreading.git"
+REPO_DIR = "/content/lipreading"
+
+# Google Drive file IDs for model files and video samples
+MAIN_MODEL_GDRIVE_ID = "1JkOPriFqzoHdZZl2XEsaNMnos9hxq0mO"  # LRS3_V_WER19 models
+LM_MODEL_GDRIVE_ID = "1pl7-S77Bo6Tb5Sprl-rbjJCSTGCWxkMo"    # lm_en_subword models
+VIDEO_SAMPLES_GDRIVE_ID = "1gTbqLsCbuj87MT-_wviKjfMdl58l6ECZ"     # Video samples folder
+
+# Model and video directories
+MAIN_MODEL_DIR = f"{REPO_DIR}/benchmarks/LRS3/models/LRS3_V_WER19.1"
+LM_MODEL_DIR   = f"{REPO_DIR}/benchmarks/LRS3/language_models/lm_en_subword"
+VIDEO_SAMPLES_DIR = f"{REPO_DIR}/video_samples"
+
+MAIN_MODEL_PTH = f"{MAIN_MODEL_DIR}/model.pth"
+MAIN_MODEL_JSON= f"{MAIN_MODEL_DIR}/model.json"
+LM_MODEL_PTH   = f"{LM_MODEL_DIR}/model.pth"
+LM_MODEL_JSON  = f"{LM_MODEL_DIR}/model.json"
+
+def run(cmd, desc=None, check=True):
+  print("\n" + "="*60)
+  print(desc or cmd)
+  print("="*60)
+  r = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+  if r.stdout.strip(): print(r.stdout)
+  if r.returncode != 0:
+    if r.stderr.strip(): print(r.stderr)
+    if check: raise RuntimeError(f"Command failed: {cmd}")
+  return r
+
+def ensure_dir(p): pathlib.Path(p).mkdir(parents=True, exist_ok=True)
+
+def download_from_gdrive(file_id, target_dir, desc="", file_types=None):
+  """Download folder from Google Drive and move specified files to correct location"""
+  print(f"\n📥 Downloading {desc} from Google Drive...")
+  ensure_dir(target_dir)
+  
+  # Download folder from Google Drive
+  cmd = f"gdown --folder --id {file_id} -O {target_dir}"
+  run(cmd, f"Downloading {desc}")
+  
+  # Default to model files if no file types specified
+  if file_types is None:
+    file_types = ['model.pth', 'model.json']
+  
+  # Find and move specified files from subdirectories to target_dir
+  for root, dirs, files in os.walk(target_dir):
+    for file in files:
+      # Check if file matches any of the specified types
+      if any(file.endswith(ext) for ext in file_types) or file in file_types:
+        src = os.path.join(root, file)
+        dst = os.path.join(target_dir, file)
+        if src != dst:
+          print(f"Moving {file} to correct location")
+          shutil.move(src, dst)
+  
+  # Clean up empty subdirectories
+  for root, dirs, files in os.walk(target_dir, topdown=False):
+    for dir_name in dirs:
+      dir_path = os.path.join(root, dir_name)
+      if not os.listdir(dir_path):  # If directory is empty
+        os.rmdir(dir_path)
+        print(f"Cleaned up empty directory: {dir_name}")
+  
+  print(f"✅ {desc} setup complete")
+
+# 1) Clone / update repo
+if not os.path.isdir(REPO_DIR):
+  run(f"git clone {REPO_URL} {REPO_DIR}", "Cloning repository")
+else:
+  run(f"cd {REPO_DIR} && git pull --rebase", "Updating repository")
+
+# 2) Torch stack (match CUDA 11.8)
+run("pip uninstall -y torch torchvision torchaudio || true", "Uninstalling old torch stack")
+run("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118", "Installing torch/vision/audio (cu118)")
+
+# 3) Project deps, filter out ibug packages (we'll use MediaPipe)
+req_src = pathlib.Path(f"{REPO_DIR}/requirements.txt").read_text().splitlines()
+filtered = [l for l in req_src if not l.strip().startswith(("ibug-face-detection","ibug-face-alignment"))]
+pathlib.Path(f"{REPO_DIR}/requirements_colab.txt").write_text("\n".join(filtered) + "\n")
+run(f"pip install -r {REPO_DIR}/requirements_colab.txt", "Installing project requirements (filtered)")
+run("pip install --quiet mediapipe opencv-python-headless ffmpeg-python av hydra-core tqdm gdown", "Installing extra deps + gdown for Google Drive")
+run("apt-get update && apt-get install -y ffmpeg", "Installing system ffmpeg")
+
+# 4) Clean duplicate top-level /content/benchmarks if present
+if os.path.isdir("/content/benchmarks"):
+  run("rm -rf /content/benchmarks", "Cleaning duplicate /content/benchmarks")
+
+# 5) Download and setup model files from Google Drive
+print("\n🔄 Checking and downloading model files...")
+
+# Check if main model files exist, download if missing
+if not (os.path.isfile(MAIN_MODEL_PTH) and os.path.isfile(MAIN_MODEL_JSON)):
+  download_from_gdrive(MAIN_MODEL_GDRIVE_ID, MAIN_MODEL_DIR, "LRS3_V_WER19.1 model")
+else:
+  print("✅ Main model files already exist")
+
+# Check if language model files exist, download if missing  
+if not (os.path.isfile(LM_MODEL_PTH) and os.path.isfile(LM_MODEL_JSON)):
+  download_from_gdrive(LM_MODEL_GDRIVE_ID, LM_MODEL_DIR, "lm_en_subword language model")
+else:
+  print("✅ Language model files already exist")
+
+# Download video samples if video samples ID is provided
+if VIDEO_SAMPLES_GDRIVE_ID != "YOUR_VIDEO_SAMPLES_GDRIVE_ID":
+  if not os.path.exists(VIDEO_SAMPLES_DIR) or not os.listdir(VIDEO_SAMPLES_DIR):
+    download_from_gdrive(VIDEO_SAMPLES_GDRIVE_ID, VIDEO_SAMPLES_DIR, "video samples", file_types=['.mp4', '.avi', '.mov'])
+  else:
+    print("✅ Video samples already exist")
+else:
+  print("⏭️  Video samples download skipped (no ID provided)")
+
+# Final validation
+missing = []
+for p in (MAIN_MODEL_PTH, MAIN_MODEL_JSON, LM_MODEL_PTH, LM_MODEL_JSON):
+  if not os.path.isfile(p): missing.append(p)
+
+if missing:
+  print("\n❌ ERROR: Some model files are still missing after download:")
+  for m in missing: print(f"- {m}")
+  print("\nPlease check your Google Drive links and file structure.")
+  raise RuntimeError("Model files missing after download")
+else:
+  print("\n✅ All required model files are present!")
+  print(f"Main model:     {MAIN_MODEL_PTH}")
+  print(f"Language model: {LM_MODEL_PTH}")
+  print("\n🎉 Setup complete! Proceed to Part 2 to run inference.")
