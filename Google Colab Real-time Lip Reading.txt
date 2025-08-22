@@ -2,439 +2,570 @@
 # Part 3: Real-time Webcam Lip Reading
 # ============================
 
-import os, sys
-
-# Configuration
-REPO_DIR = "/content/lipreading"
-REALTIME_SCRIPT = f"{REPO_DIR}/realtime_lip_reading.py"
-
-# Add repo to Python path
-if REPO_DIR not in sys.path:
-    sys.path.insert(0, REPO_DIR)
-
-# Download the real-time script if not exists
-if not os.path.exists(REALTIME_SCRIPT):
-    print("📥 Downloading real-time lip reading script...")
-    
-    script_content = '''# ============================
-# Part 3: Real-time Webcam Lip Reading
-# ============================
-
-import os
-import cv2
-import time
-import torch
-import numpy as np
-import threading
-import queue
-from collections import deque
-from configparser import ConfigParser
+import os, sys, cv2, time, torch, tempfile, threading, base64, numpy as np
+from concurrent.futures import ThreadPoolExecutor
+from IPython.display import display, HTML, Javascript
+from google.colab import output
 import warnings
 warnings.filterwarnings("ignore")
 
-# Import the existing pipeline components
-from pipelines.pipeline import InferencePipeline
-from pipelines.data.data_module import AVSRDataLoader
-from pipelines.detectors.mediapipe.detector import LandmarksDetector
-from pipelines.detectors.mediapipe.video_process import VideoProcess
-from pipelines.data.transforms import VideoTransform
+# Configuration - Force GPU like Part 2
+REPO_DIR = "/content/lipreading"
+CONFIG_PATH = f"{REPO_DIR}/configs/LRS3_V_WER19.1.ini"
+GPU_IDX = 0
+
+# Debug and fix import paths
+print(f"📁 Current working directory: {os.getcwd()}")
+print(f"📁 Changing to: {REPO_DIR}")
+
+# Change to repo directory and add to Python path
+os.chdir(REPO_DIR)
+sys.path.insert(0, REPO_DIR)
+
+print(f"📁 Now in: {os.getcwd()}")
+print(f"🔍 Python path: {sys.path[:3]}...")
+
+# Check if files exist
+pipeline_file = "pipelines/pipeline.py"
+detector_file = "pipelines/detectors/mediapipe/detector.py"
+
+print(f"🔍 Checking {pipeline_file}: {os.path.exists(pipeline_file)}")
+print(f"🔍 Checking {detector_file}: {os.path.exists(detector_file)}")
+
+# List what's actually in the pipelines directory
+if os.path.exists("pipelines"):
+    print(f"📂 Contents of pipelines/: {os.listdir('pipelines')}")
+    if os.path.exists("pipelines/detectors"):
+        print(f"📂 Contents of pipelines/detectors/: {os.listdir('pipelines/detectors')}")
+        if os.path.exists("pipelines/detectors/mediapipe"):
+            print(f"📂 Contents of pipelines/detectors/mediapipe/: {os.listdir('pipelines/detectors/mediapipe')}")
+
+try:
+    from pipelines.pipeline import InferencePipeline
+    print("✅ InferencePipeline imported successfully")
+except Exception as e:
+    print(f"❌ Failed to import InferencePipeline: {e}")
+    
+# Install and import MediaPipe for direct face detection
+try:
+    import mediapipe as mp
+    print("✅ MediaPipe imported successfully")
+except ImportError:
+    print("📦 Installing MediaPipe...")
+    import subprocess
+    subprocess.run([sys.executable, "-m", "pip", "install", "mediapipe"], check=True)
+    import mediapipe as mp
+    print("✅ MediaPipe installed and imported successfully")
 
 class RealtimeLipReader:
-    def __init__(self, config_path, device="cuda:0", buffer_seconds=4, process_interval=1):
-        """
-        Real-time lip reading from webcam
-        
-        Args:
-            config_path: Path to model config file
-            device: GPU device
-            buffer_seconds: Seconds of video to buffer for processing
-            process_interval: How often to process (in seconds)
-        """
+    def __init__(self):
         print("🚀 Initializing Real-time Lip Reader...")
         
-        self.device = device
-        self.buffer_seconds = buffer_seconds
-        self.process_interval = process_interval
-        self.fps = 25  # Target FPS for processing
-        self.buffer_size = int(self.fps * buffer_seconds)
-        
-        # Load model and pipeline
-        self.load_model(config_path)
-        
-        # Initialize video capture
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)  # Webcam FPS
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        
-        # Threading and buffering
-        self.frame_buffer = deque(maxlen=self.buffer_size)
-        self.frame_timestamps = deque(maxlen=self.buffer_size)
-        self.capture_queue = queue.Queue(maxsize=10)
-        self.processing_queue = queue.Queue(maxsize=3)
-        
-        # Control variables
-        self.is_recording = False
-        self.is_running = True
-        self.last_process_time = 0
-        self.current_result = "Ready to start... Press SPACE to begin"
-        self.processing_status = "Idle"
-        
-        # Initialize landmarks detector
-        self.landmarks_detector = LandmarksDetector()
-        
-        print("✅ Real-time Lip Reader initialized successfully!")
-        print("\\n🎮 Controls:")
-        print("  SPACE: Start/Stop recording")
-        print("  ENTER: Force process current buffer")
-        print("  ESC: Quit")
-        print("  q: Quit")
-    
-    def load_model(self, config_path):
-        """Load the lip reading model and pipeline"""
-        print("📥 Loading lip reading model...")
-        
-        # Read config
-        config = ConfigParser()
-        config.read(config_path)
-        
-        # Initialize pipeline (reusing exact same code as infer.py)
+        # Load model with GPU
+        device = torch.device(f"cuda:{GPU_IDX}" if torch.cuda.is_available() and GPU_IDX >= 0 else "cpu")
         self.pipeline = InferencePipeline(
-            config_filename=config_path,
+            config_filename=CONFIG_PATH,
             detector="mediapipe",
             face_track=True,
-            device=self.device
+            device=device
         )
         
-        # Initialize data processing components
-        modality = config.get("input", "modality")
-        input_v_fps = config.getfloat("input", "v_fps")
-        model_v_fps = config.getfloat("model", "v_fps")
-        speed_rate = input_v_fps / model_v_fps
-        
-        self.dataloader = AVSRDataLoader(
-            modality=modality,
-            speed_rate=speed_rate,
-            detector="mediapipe",
-            convert_gray=True
+        # Face detector for live feedback - use MediaPipe directly
+        self.mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
         
+        print(f"✅ Using device: {device}")
         print("✅ Model loaded successfully!")
+        
+        # Recording state
+        self.recording = False
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        
+        # Video parameters for file recording (higher FPS for better accuracy)
+        self.fps = 25
+        self.frame_interval = 1 / self.fps
+        self.min_duration = 2  # Minimum 2 seconds
+        
+        # Live preview state
+        self.face_detected = False
+        self.speaking_detected = False
+        self.prev_landmarks = None
+        self.landmark_history = []
+        self.debug_counter = 0
+        
+        print("✅ Real-time Lip Reader ready!")
     
-    def capture_frames(self):
-        """Capture frames from webcam in separate thread"""
-        while self.is_running:
-            ret, frame = self.cap.read()
-            if ret:
-                timestamp = time.time()
+    def detect_face_and_speaking(self, frame):
+        """Detect if face is present and if person is speaking"""
+        try:
+            # Convert frame to RGB for MediaPipe (frame is already RGB from webcam)
+            frame_rgb = frame
+            
+            # Detect face landmarks using MediaPipe
+            results = self.mp_face_mesh.process(frame_rgb)
+            
+            # Debug output (only occasionally)
+            self.debug_counter += 1
+            if self.debug_counter % 30 == 1:  # Debug every 30 frames
+                print(f"🔍 MediaPipe results: {results.multi_face_landmarks is not None}")
+            
+            if results.multi_face_landmarks:
+                self.face_detected = True
                 
-                if self.is_recording:
-                    # Add to buffer for processing
-                    self.frame_buffer.append(frame.copy())
-                    self.frame_timestamps.append(timestamp)
+                # Get the first face landmarks
+                face_landmarks = results.multi_face_landmarks[0]
                 
-                # Add to display queue
-                try:
-                    self.capture_queue.put_nowait((frame, timestamp))
-                except queue.Full:
-                    pass  # Skip if queue is full
+                # Convert landmarks to numpy array
+                landmarks = []
+                for landmark in face_landmarks.landmark:
+                    landmarks.append([landmark.x, landmark.y])
+                landmarks = np.array(landmarks)
+                
+                # Check for mouth movement (speaking detection)
+                if self.prev_landmarks is not None:
+                    try:
+                        # Get mouth region landmarks (indices around mouth area)
+                        # MediaPipe face mesh has different indices than dlib
+                        mouth_indices = list(range(0, 17)) + list(range(267, 284)) + list(range(269, 271)) + list(range(271, 272))
+                        mouth_indices = [i for i in mouth_indices if i < len(landmarks)]
+                        
+                        if len(mouth_indices) > 5:  # Need sufficient landmarks
+                            mouth_current = landmarks[mouth_indices]
+                            mouth_prev = self.prev_landmarks[mouth_indices] if len(self.prev_landmarks) > max(mouth_indices) else self.prev_landmarks[-len(mouth_indices):]
+                            
+                            # Calculate average movement
+                            movement = np.mean(np.linalg.norm(mouth_current - mouth_prev, axis=1))
+                            
+                            # Add to history for smoothing
+                            self.landmark_history.append(movement)
+                            if len(self.landmark_history) > 5:
+                                self.landmark_history.pop(0)
+                            
+                            # Speaking detected if average movement is above threshold
+                            avg_movement = np.mean(self.landmark_history)
+                            self.speaking_detected = avg_movement > 0.01  # Adjusted threshold for MediaPipe coordinates
+                            
+                            if self.debug_counter % 30 == 1:  # Debug every 30 frames
+                                print(f"👄 Movement: {movement:.4f}, Avg: {avg_movement:.4f}, Speaking: {self.speaking_detected}")
+                        
+                    except Exception as e:
+                        if self.debug_counter % 30 == 1:
+                            print(f"❌ Speaking detection error: {e}")
+                        self.speaking_detected = False
+                
+                self.prev_landmarks = landmarks.copy()
             else:
-                break
-    
-    def process_video_segment(self):
-        """Process video segments for lip reading in separate thread"""
-        while self.is_running:
-            try:
-                # Wait for processing request
-                process_data = self.processing_queue.get(timeout=1.0)
-                if process_data is None:
-                    break
+                self.face_detected = False
+                self.speaking_detected = False
+                if self.debug_counter % 60 == 1:  # Debug less frequently for no face
+                    print("❌ No face detected")
                 
-                frames, timestamps = process_data
-                self.processing_status = "Processing..."
-                
-                try:
-                    # Process the video segment
-                    result = self.process_frames(frames)
-                    if result and result.strip():
-                        self.current_result = f"📝 {result}"
-                        print(f"\\n🗣️  Lip Reading Result: {result}")
-                    else:
-                        self.current_result = "🔍 Processing... (no clear speech detected)"
-                except Exception as e:
-                    print(f"❌ Processing error: {e}")
-                    self.current_result = f"❌ Error: {str(e)[:50]}..."
-                
-                self.processing_status = "Ready"
-                self.processing_queue.task_done()
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                print(f"❌ Processing thread error: {e}")
-                self.processing_status = "Error"
-    
-    def process_frames(self, frames):
-        """Process a sequence of frames through the lip reading pipeline"""
-        if len(frames) < 10:  # Need minimum frames
-            return None
-        
-        # Convert frames to numpy array (T, H, W, C)
-        video_array = np.array(frames)
-        
-        # Extract landmarks for all frames
-        landmarks = []
-        for frame in frames:
-            frame_landmarks = self.landmarks_detector(frame)
-            landmarks.append(frame_landmarks)
-        
-        # Process video through the same pipeline as file-based inference
-        try:
-            # Use the video processing pipeline
-            processed_video = self.pipeline.dataloader.video_process(video_array, landmarks)
-            
-            if processed_video is None or len(processed_video) == 0:
-                return None
-            
-            # Convert to tensor and apply transforms
-            video_tensor = torch.tensor(processed_video)
-            transformed_video = self.pipeline.dataloader.video_transform(video_tensor)
-            
-            # Run inference
-            result = self.pipeline.model.infer(transformed_video)
-            return result
-            
         except Exception as e:
-            print(f"❌ Frame processing error: {e}")
+            if self.debug_counter % 30 == 1:
+                print(f"❌ Face detection error: {e}")
+                import traceback
+                traceback.print_exc()
+            self.face_detected = False
+            self.speaking_detected = False
+    
+    def process_video(self, video_path):
+        """Process video file and return result"""
+        try:
+            print("🔄 Processing video...")
+            result = self.pipeline(video_path)
+            print(f"🗣️ Result: {result}")
+            
+            # Clean up video file
+            if os.path.exists(video_path):
+                os.remove(video_path)
+            
+            return result
+        except Exception as e:
+            print(f"❌ Processing error: {e}")
+            if os.path.exists(video_path):
+                os.remove(video_path)
             return None
     
-    def should_process_now(self):
-        """Check if we should process the current buffer"""
-        current_time = time.time()
+    def start_web_preview(self):
+        """Start web-based preview with live feedback"""
+        # Video recording state
+        self.frames_for_video = []
+        self.recording_start_time = None
+        self.futures = []
         
-        # Check if enough time has passed since last processing
-        if current_time - self.last_process_time < self.process_interval:
-            return False
+        # Create web interface
+        html_interface = """
+        <div id="webcam-container">
+            <canvas id="canvas" width="640" height="480" style="border: 3px solid #ccc;"></canvas>
+            <div style="display: flex; justify-content: center; align-items: center; margin: 10px; gap: 20px;">
+                <!-- Recording Indicator -->
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <div id="record-indicator" style="width: 20px; height: 20px; border-radius: 50%; background: red;"></div>
+                    <span id="record-status">READY</span>
+                </div>
+                <!-- Face Detection -->
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <div id="face-indicator" style="width: 20px; height: 20px; border-radius: 50%; background: gray;"></div>
+                    <span id="face-status">Waiting</span>
+                </div>
+                <!-- Speaking Detection -->
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <div id="speak-indicator" style="width: 20px; height: 20px; border-radius: 50%; background: gray;"></div>
+                    <span id="speak-status">Waiting</span>
+                </div>
+            </div>
+            <div id="instructions">Press SPACE to start/stop recording | ENTER to force process</div>
+            <div id="result">Ready! Press SPACE to record, speak, then SPACE again to process</div>
+        </div>
         
-        # Check if we have enough frames
-        if len(self.frame_buffer) < self.buffer_size * 0.7:  # At least 70% of buffer
-            return False
+        <style>
+        #webcam-container { text-align: center; padding: 10px; font-family: Arial; }
+        #canvas { display: block; margin: 10px auto; }
+        #instructions { font-weight: bold; margin: 10px; color: #333; }
+        #result { margin: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px; min-height: 30px; }
+        </style>
         
-        return True
-    
-    def trigger_processing(self, force=False):
-        """Trigger processing of current buffer"""
-        if not self.is_recording or len(self.frame_buffer) == 0:
-            return
+        <script>
+        let canvas = document.getElementById('canvas');
+        let ctx = canvas.getContext('2d');
+        let video = document.createElement('video');
+        let isCapturing = false;
         
-        if not force and not self.should_process_now():
-            return
+        // Initialize webcam
+        navigator.mediaDevices.getUserMedia({video: {width: 640, height: 480}})
+            .then(stream => {
+                video.srcObject = stream;
+                video.play();
+                startPreview();
+            })
+            .catch(err => {
+                document.getElementById('result').innerHTML = 'Camera error: ' + err.message;
+            });
         
-        # Copy current buffer for processing
-        frames = list(self.frame_buffer)
-        timestamps = list(self.frame_timestamps)
+        function startPreview() {
+            let lastFrameTime = 0;
+            const frameInterval = 100; // Send frame every 100ms (10 FPS) to reduce lag
+            
+            function drawFrame(currentTime) {
+                if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                    ctx.drawImage(video, 0, 0, 640, 480);
+                    
+                    // Only send frames at reduced rate and when recording
+                    if (currentTime - lastFrameTime >= frameInterval) {
+                        // Use higher quality for better accuracy
+                        let imageData = canvas.toDataURL('image/jpeg', 0.95);
+                        let base64Data = imageData.split(',')[1];
+                        google.colab.kernel.invokeFunction('process_frame', [base64Data], {});
+                        lastFrameTime = currentTime;
+                    }
+                }
+                requestAnimationFrame(drawFrame);
+            }
+            requestAnimationFrame(drawFrame);
+        }
         
-        # Add to processing queue
-        try:
-            self.processing_queue.put_nowait((frames, timestamps))
-            self.last_process_time = time.time()
-        except queue.Full:
-            print("⚠️  Processing queue full, skipping...")
-    
-    def draw_status_overlay(self, frame):
-        """Draw status overlay on frame"""
-        # Status indicator circle
-        center = (30, 30)
-        radius = 15
+        // Keyboard controls
+        document.addEventListener('keydown', function(event) {
+            if (event.code === 'Space') {
+                event.preventDefault();
+                google.colab.kernel.invokeFunction('toggle_recording', [], {});
+            } else if (event.code === 'Enter') {
+                event.preventDefault();
+                google.colab.kernel.invokeFunction('force_process', [], {});
+            }
+        });
         
-        if self.is_recording:
-            color = (0, 255, 0)  # Green
-            status = "RECORDING"
-        else:
-            color = (0, 0, 255)  # Red  
-            status = "PAUSED"
+        // Update status indicators
+        function updateStatus(recording, faceDetected, speaking) {
+            // Recording indicator
+            let recordIndicator = document.getElementById('record-indicator');
+            let recordStatus = document.getElementById('record-status');
+            if (recording) {
+                recordIndicator.style.background = 'green';
+                recordStatus.textContent = 'RECORDING';
+            } else {
+                recordIndicator.style.background = 'red';
+                recordStatus.textContent = 'READY';
+            }
+            
+            // Face detection indicator (only update when recording)
+            let faceIndicator = document.getElementById('face-indicator');
+            let faceStatus = document.getElementById('face-status');
+            if (recording) {
+                if (faceDetected) {
+                    faceIndicator.style.background = 'blue';
+                    faceStatus.textContent = 'Face Detected';
+                } else {
+                    faceIndicator.style.background = 'gray';
+                    faceStatus.textContent = 'No Face';
+                }
+            } else {
+                faceIndicator.style.background = 'gray';
+                faceStatus.textContent = 'Waiting';
+            }
+            
+            // Speaking indicator (only update when recording)
+            let speakIndicator = document.getElementById('speak-indicator');
+            let speakStatus = document.getElementById('speak-status');
+            if (recording) {
+                if (speaking) {
+                    speakIndicator.style.background = 'orange';
+                    speakStatus.textContent = 'Speaking';
+                } else {
+                    speakIndicator.style.background = 'gray';
+                    speakStatus.textContent = 'Silent';
+                }
+            } else {
+                speakIndicator.style.background = 'gray';
+                speakStatus.textContent = 'Waiting';
+            }
+        }
         
-        cv2.circle(frame, center, radius, color, -1)
-        cv2.putText(frame, status, (55, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        // Focus for keyboard events
+        canvas.tabIndex = 1000;
+        canvas.focus();
+        </script>
+        """
         
-        # Buffer status
-        buffer_pct = len(self.frame_buffer) / self.buffer_size * 100
-        buffer_text = f"Buffer: {buffer_pct:.0f}%"
-        cv2.putText(frame, buffer_text, (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        display(HTML(html_interface))
         
-        # Processing status
-        proc_text = f"Status: {self.processing_status}"
-        cv2.putText(frame, proc_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-        # Current result (truncated for display)
-        result_display = self.current_result[:60] + "..." if len(self.current_result) > 60 else self.current_result
-        cv2.putText(frame, result_display, (10, frame.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-        
-        # Controls help
-        help_text = "SPACE: Start/Stop | ENTER: Process | ESC/q: Quit"
-        cv2.putText(frame, help_text, (10, frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
-        
-        return frame
-    
-    def run(self):
-        """Main loop for real-time lip reading"""
-        print("\\n🎬 Starting real-time lip reading...")
-        print("📹 Webcam feed should appear. Press SPACE to start recording.")
-        
-        # Start capture and processing threads
-        capture_thread = threading.Thread(target=self.capture_frames, daemon=True)
-        processing_thread = threading.Thread(target=self.process_video_segment, daemon=True)
-        
-        capture_thread.start()
-        processing_thread.start()
-        
-        try:
-            while self.is_running:
-                # Get frame for display
-                try:
-                    frame, timestamp = self.capture_queue.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                
-                # Draw status overlay
-                display_frame = self.draw_status_overlay(frame)
-                
-                # Show frame
-                cv2.imshow('Real-time Lip Reading', display_frame)
-                
-                # Handle keyboard input
-                key = cv2.waitKey(1) & 0xFF
-                
-                if key == ord(' '):  # Space - toggle recording
-                    self.is_recording = not self.is_recording
-                    if self.is_recording:
-                        print("🟢 Recording started!")
-                        self.current_result = "Recording... Speak to the camera"
-                        self.frame_buffer.clear()
-                        self.frame_timestamps.clear()
-                    else:
-                        print("🔴 Recording paused!")
-                        self.current_result = "Recording paused. Press SPACE to resume"
-                
-                elif key == ord('\\r') or key == ord('\\n'):  # Enter - force process
-                    print("⚡ Force processing current buffer...")
-                    self.trigger_processing(force=True)
-                
-                elif key == 27 or key == ord('q'):  # ESC or 'q' - quit
-                    print("👋 Quitting...")
-                    break
-                
-                # Auto-trigger processing for overlapping segments
-                if self.is_recording:
-                    self.trigger_processing()
-        
-        except KeyboardInterrupt:
-            print("\\n👋 Interrupted by user")
-        
-        finally:
-            self.cleanup()
-    
-    def cleanup(self):
-        """Clean up resources"""
-        print("🧹 Cleaning up...")
-        self.is_running = False
-        
-        # Signal processing thread to stop
-        try:
-            self.processing_queue.put_nowait(None)
-        except queue.Full:
-            pass
-        
-        # Release webcam
-        if self.cap:
-            self.cap.release()
-        
-        cv2.destroyAllWindows()
-        print("✅ Cleanup completed!")
+        print("🎬 Lip Reading Interface Ready!")
+        print("📹 Webcam preview visible above")
+        print("🎮 Keyboard Controls:")
+        print("  • SPACE: Start/Stop recording")
+        print("  • ENTER: Force process current buffer")
+        print("📊 Status Indicators (active only when recording):")
+        print("  • 🔴 READY / 🟢 RECORDING")
+        print("  • 🔵 Face detected (when recording)")
+        print("  • 🟠 Speaking detected (when recording)")
+        print("📝 Results appear only when recording stops")
 
+# Global variables for JavaScript callbacks
+lip_reader = None
+current_video_writer = None
+video_frames = []
+last_record_time = 0
 
-def main():
-    """Main function to run real-time lip reading"""
-    # Configuration
-    REPO_DIR = "/content/lipreading"
-    CONFIG_PATH = f"{REPO_DIR}/configs/LRS3_V_WER19.1.ini"
-    DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+# JavaScript callback functions
+def process_frame(base64_data):
+    """Process frame from JavaScript"""
+    global lip_reader, current_video_writer, video_frames, last_record_time
     
-    # Validate setup
-    if not os.path.exists(CONFIG_PATH):
-        print(f"❌ Config file not found: {CONFIG_PATH}")
-        print("Please run Part 1 first to download models!")
-        return
-    
-    # Check model files
-    model_files = [
-        f"{REPO_DIR}/benchmarks/LRS3/models/LRS3_V_WER19.1/model.pth",
-        f"{REPO_DIR}/benchmarks/LRS3/models/LRS3_V_WER19.1/model.json",
-        f"{REPO_DIR}/benchmarks/LRS3/language_models/lm_en_subword/model.pth",
-        f"{REPO_DIR}/benchmarks/LRS3/language_models/lm_en_subword/model.json",
-    ]
-    
-    missing_files = [f for f in model_files if not os.path.exists(f)]
-    if missing_files:
-        print("❌ Missing model files:")
-        for f in missing_files:
-            print(f"  - {f}")
-        print("Please run Part 1 first to download models!")
-        return
-    
-    print(f"🎯 Using device: {DEVICE}")
-    print(f"📋 Config: {CONFIG_PATH}")
-    
-    # Initialize and run real-time lip reader
     try:
-        lip_reader = RealtimeLipReader(
-            config_path=CONFIG_PATH,
-            device=DEVICE,
-            buffer_seconds=4,      # 4 second buffer for better accuracy
-            process_interval=1     # Process every 1 second for overlapping segments
-        )
-        lip_reader.run()
+        # Only process frames when recording is active
+        if not lip_reader.recording:
+            return  # Do nothing if not recording
+        
+        # Decode frame
+        image_bytes = base64.b64decode(base64_data)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Detect face and speaking (only when recording)
+        lip_reader.detect_face_and_speaking(frame_rgb)
+        
+        # Record frames
+        video_frames.append(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY))
+        last_record_time = time.time()
+        
+        # Update web interface status every few frames to avoid spam
+        frame_counter = getattr(process_frame, 'counter', 0) + 1
+        process_frame.counter = frame_counter
+        
+        if frame_counter % 5 == 1:  # Update UI every 5 frames
+            js_code = f"""
+            if (typeof updateStatus === 'function') {{
+                updateStatus({str(lip_reader.recording).lower()}, 
+                            {str(lip_reader.face_detected).lower()}, 
+                            {str(lip_reader.speaking_detected).lower()});
+            }}
+            """
+            display(Javascript(js_code))
+            
+        # Show recording progress
+        if len(video_frames) % (lip_reader.fps * 2) == 0 and len(video_frames) > 0:  # Every 2 seconds
+            duration = len(video_frames) / lip_reader.fps
+            js_progress = f"""
+            document.getElementById('result').innerHTML = '🎙️ Recording... ({duration:.1f}s)';
+            """
+            display(Javascript(js_progress))
+        
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Frame processing error: {e}")
         import traceback
         traceback.print_exc()
 
-
-if __name__ == "__main__":
-    main()'''
+def toggle_recording():
+    """Toggle recording state"""
+    global lip_reader, video_frames, last_record_time
     
-    with open(REALTIME_SCRIPT, 'w') as f:
-        f.write(script_content)
-    print("✅ Real-time script created!")
-
-# Validate environment
-print("🔍 Checking environment...")
-
-# Check if models are downloaded
-CONFIG_PATH = f"{REPO_DIR}/configs/LRS3_V_WER19.1.ini"
-model_files = [
-    f"{REPO_DIR}/benchmarks/LRS3/models/LRS3_V_WER19.1/model.pth",
-    f"{REPO_DIR}/benchmarks/LRS3/models/LRS3_V_WER19.1/model.json",
-    f"{REPO_DIR}/benchmarks/LRS3/language_models/lm_en_subword/model.pth",
-    f"{REPO_DIR}/benchmarks/LRS3/language_models/lm_en_subword/model.json",
-]
-
-missing_files = [f for f in model_files if not os.path.exists(f)]
-if missing_files:
-    print("❌ Missing model files:")
-    for f in missing_files:
-        print(f"  - {f}")
-    print("\n🚨 Please run Part 1 first to download models!")
-else:
-    print("✅ All model files found!")
-    print("✅ Environment ready!")
+    was_recording = lip_reader.recording
+    lip_reader.recording = not lip_reader.recording
     
-    # Import and run
-    print("\n🚀 Starting Real-time Lip Reading...")
-    print("📹 Your webcam should activate and a window will appear.")
-    print("🎮 Use the keyboard controls to start/stop recording.")
-    print("\n" + "="*60)
+    if lip_reader.recording:
+        # Start recording
+        video_frames = []
+        last_record_time = time.time()
+        
+        # Reset face detection states
+        lip_reader.face_detected = False
+        lip_reader.speaking_detected = False
+        lip_reader.prev_landmarks = None
+        lip_reader.landmark_history = []
+        lip_reader.debug_counter = 0
+        
+        print("🟢 Recording started! Speak to the camera...")
+        
+        # Force UI update
+        js_update = """
+        if (typeof updateStatus === 'function') {
+            updateStatus(true, false, false);
+        }
+        document.getElementById('result').innerHTML = '🎙️ Recording... Speak to camera, press SPACE to stop and process';
+        """
+        display(Javascript(js_update))
+        
+        return "🟢 RECORDING"
+    else:
+        # Stop recording and process
+        if len(video_frames) >= lip_reader.fps * lip_reader.min_duration:
+            process_recorded_video()
+        else:
+            print("⚠️ Recording too short, need at least 2 seconds")
+        
+        # Reset face detection states when stopping
+        lip_reader.face_detected = False
+        lip_reader.speaking_detected = False
+        
+        print("🔴 Recording stopped!")
+        
+        # Force UI update
+        js_update = """
+        if (typeof updateStatus === 'function') {
+            updateStatus(false, false, false);
+        }
+        document.getElementById('result').innerHTML = '🔄 Processing video...';
+        """
+        display(Javascript(js_update))
+        
+        return "🔴 PAUSED"
+
+def force_process():
+    """Force process current buffer"""
+    global video_frames
     
-    # Change to repo directory and run
-    os.chdir(REPO_DIR)
-    exec(open(REALTIME_SCRIPT).read())
+    if len(video_frames) > 0:
+        print(f"⚡ Force processing {len(video_frames)} frames...")
+        process_recorded_video()
+        return "⚡ Processing..."
+    else:
+        return "❌ No frames to process"
+
+
+def process_recorded_video():
+    """Process recorded video frames with enhanced quality"""
+    global video_frames, lip_reader
+    
+    try:
+        if len(video_frames) < 20:
+            print("❌ Not enough frames")
+            return
+        
+        # Create temporary video file with enhanced quality
+        output_path = tempfile.mktemp(suffix='.mp4')
+        height, width = video_frames[0].shape
+        
+        # Use high-quality settings
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, lip_reader.fps, (width, height), False)
+        
+        # Enhanced preprocessing for better accuracy
+        processed_frames = []
+        for frame in video_frames:
+            # Apply histogram equalization for better contrast
+            enhanced = cv2.equalizeHist(frame)
+            # Slight sharpening for better lip details  
+            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]], dtype=np.float32)
+            sharpened = cv2.filter2D(enhanced, -1, kernel)
+            processed_frames.append(sharpened)
+            out.write(sharpened)
+        
+        out.release()
+        
+        print(f"🔄 Processing final video ({len(video_frames)} frames)...")
+        
+        # Process video
+        result = lip_reader.pipeline(output_path)
+        
+        # Clean up
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        
+        if result and result.strip():
+            clean_result = result.strip().upper()
+            
+            # Apply same filtering for final result
+            words = clean_result.split()
+            if len(words) > 0:
+                most_common_word = max(set(words), key=words.count)
+                repetition_ratio = words.count(most_common_word) / len(words)
+                
+                if repetition_ratio < 0.8:  # Slightly more lenient for final result
+                    print(f"✅ Lip reading result: '{clean_result}'")
+                    
+                    # Update web interface
+                    js_code = f"""
+                    document.getElementById('result').innerHTML = '✅ Result: {clean_result}';
+                    """
+                    display(Javascript(js_code))
+                else:
+                    print(f"⚠️ Filtered repetitive result: '{clean_result}'")
+                    js_code = """
+                    document.getElementById('result').innerHTML = '⚠️ Result filtered (too repetitive)';
+                    """
+                    display(Javascript(js_code))
+        else:
+            print("❌ No clear speech detected")
+            js_code = """
+            document.getElementById('result').innerHTML = '❌ No clear speech detected';
+            """
+            display(Javascript(js_code))
+        
+        video_frames = []
+        
+    except Exception as e:
+        print(f"❌ Video processing error: {e}")
+        import traceback
+        traceback.print_exc()
+
+# Register callback functions
+output.register_callback('process_frame', process_frame)
+output.register_callback('toggle_recording', toggle_recording)
+output.register_callback('force_process', force_process)
+
+# Initialize and run
+try:
+    lip_reader = RealtimeLipReader()
+    lip_reader.start_web_preview()
+    
+    # Set initial status (not recording)
+    initial_status = f"""
+    if (typeof updateStatus === 'function') {{
+        updateStatus(false, false, false);
+    }}
+    """
+    display(Javascript(initial_status))
+    
+    print("\n🎯 Ready! Workflow: SPACE to start → Speak → SPACE to stop & process")
+    print("📷 Webcam preview visible above - results appear only after you stop recording")
+    
+except Exception as e:
+    print(f"❌ Error: {e}")
+    import traceback
+    traceback.print_exc()
