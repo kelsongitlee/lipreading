@@ -1,0 +1,68 @@
+# ============================
+# Cell 2: Download Models
+# ============================
+
+print("📥 Downloading models from Google Drive...")
+
+# Create directories
+os.makedirs(f"{REPO_DIR}/benchmarks/LRS3/models/LRS3_V_WER19.1", exist_ok=True)
+os.makedirs(f"{REPO_DIR}/benchmarks/LRS3/language_models/lm_en_subword", exist_ok=True)
+os.makedirs(f"{REPO_DIR}/video_samples", exist_ok=True)
+
+def download_model(gdrive_id, target_dir, desc):
+    print(f"\n📥 Downloading {desc}...")
+    try:
+        # Try gdown first
+        cmd = f"gdown --folder {gdrive_id} -O {target_dir}"
+        run(cmd, f"Downloading {desc}")
+        
+        # Move files to correct location
+        for root, dirs, files in os.walk(target_dir):
+            for file in files:
+                if file in ['model.pth', 'model.json']:
+                    src = os.path.join(root, file)
+                    dst = os.path.join(target_dir, file)
+                    if src != dst:
+                        shutil.move(src, dst)
+                        print(f"✅ Moved {file} to {target_dir}")
+        
+        # Clean up empty subdirectories
+        for root, dirs, files in os.walk(target_dir, topdown=False):
+            for dir_name in dirs:
+                dir_path = os.path.join(root, dir_name)
+                if not os.listdir(dir_path):
+                    os.rmdir(dir_path)
+        
+        print(f"✅ {desc} downloaded successfully")
+        
+    except Exception as e:
+        print(f"❌ Download failed: {e}")
+        print(f"💡 Please manually download from: https://drive.google.com/drive/folders/{gdrive_id}")
+        print(f"   And upload to: {target_dir}")
+        raise
+
+# Download main model
+download_model(
+    MAIN_MODEL_ID, 
+    f"{REPO_DIR}/benchmarks/LRS3/models/LRS3_V_WER19.1", 
+    "LRS3_V_WER19.1 model"
+)
+
+# Download language model
+download_model(
+    LM_MODEL_ID, 
+    f"{REPO_DIR}/benchmarks/LRS3/language_models/lm_en_subword", 
+    "lm_en_subword language model"
+)
+
+# Download video samples
+download_model(
+    VIDEO_SAMPLES_ID, 
+    f"{REPO_DIR}/video_samples", 
+    "video samples"
+)
+
+print("\n✅ All models downloaded!")
+print("📁 Main model: /content/lipreading/benchmarks/LRS3/models/LRS3_V_WER19.1/")
+print("📁 Language model: /content/lipreading/benchmarks/LRS3/language_models/lm_en_subword/")
+print("📁 Video samples: /content/lipreading/video_samples/")

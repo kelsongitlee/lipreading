@@ -1,0 +1,192 @@
+# ============================
+# Cell 4: Real-time Webcam Lip Reading
+# ============================
+
+import cv2
+import time
+import torch
+import tempfile
+import numpy as np
+from IPython.display import display, HTML, Javascript
+from google.colab import output
+
+print("📹 Starting real-time webcam lip reading...")
+
+# Load the model
+CONFIG_PATH = f"{REPO_DIR}/configs/LRS3_V_WER19.1.ini"
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+from pipelines.pipeline import InferencePipeline
+pipeline = InferencePipeline(
+    config_filename=CONFIG_PATH,
+    detector="mediapipe",
+    face_track=True,
+    device=device
+)
+
+print(f"✅ Model loaded on {device}")
+
+# Webcam interface
+html_interface = """
+<div id="webcam-container">
+  <canvas id="canvas" width="640" height="480" style="border: 3px solid #ccc;"></canvas>
+  <div style="margin: 10px;">
+    <div style="display: flex; align-items: center; gap: 5px; justify-content: center;">
+      <div id="record-indicator" style="width: 20px; height: 20px; border-radius: 50%; background: red;"></div>
+      <span id="record-status">READY</span>
+    </div>
+  </div>
+  <div id="instructions">Press SPACE to start/stop recording</div>
+  <div id="result">Ready! Press SPACE to record, speak, then SPACE again to process</div>
+</div>
+
+<style>
+#webcam-container { text-align: center; padding: 10px; font-family: Arial; }
+#canvas { display: block; margin: 10px auto; }
+#instructions { font-weight: bold; margin: 10px; color: #333; }
+#result { margin: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px; min-height: 30px; }
+</style>
+
+<script>
+let canvas = document.getElementById('canvas');
+let ctx = canvas.getContext('2d');
+let video = document.createElement('video');
+let isRecording = false;
+let frames = [];
+
+navigator.mediaDevices.getUserMedia({video: {width: 640, height: 480}})
+  .then(stream => {
+    video.srcObject = stream;
+    video.play();
+    startPreview();
+  })
+  .catch(err => {
+    document.getElementById('result').innerHTML = 'Camera error: ' + err.message;
+  });
+
+function startPreview() {
+  function drawFrame() {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      ctx.drawImage(video, 0, 0, 640, 480);
+      
+      if (isRecording) {
+        let imageData = canvas.toDataURL('image/jpeg', 0.95);
+        let base64Data = imageData.split(',')[1];
+        google.colab.kernel.invokeFunction('process_frame', [base64Data], {});
+      }
+    }
+    requestAnimationFrame(drawFrame);
+  }
+  requestAnimationFrame(drawFrame);
+}
+
+document.addEventListener('keydown', function(event) {
+  if (event.code === 'Space') {
+    event.preventDefault();
+    google.colab.kernel.invokeFunction('toggle_recording', [], {});
+  }
+});
+
+function updateStatus(recording) {
+  let indicator = document.getElementById('record-indicator');
+  let status = document.getElementById('record-status');
+  
+  if (recording) {
+    indicator.style.background = 'green';
+    status.textContent = 'RECORDING';
+  } else {
+    indicator.style.background = 'red';
+    status.textContent = 'READY';
+  }
+}
+
+canvas.tabIndex = 1000;
+canvas.focus();
+</script>
+"""
+
+display(HTML(html_interface))
+print("🎬 Webcam interface ready!")
+print("🎮 Press SPACE to start/stop recording")
+
+# Global variables
+video_frames = []
+recording = False
+
+def process_frame(base64_data):
+    global video_frames, recording
+    if not recording:
+        return
+    
+    # Decode frame
+    image_bytes = base64.b64decode(base64_data)
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    video_frames.append(frame_gray)
+
+def toggle_recording():
+    global recording, video_frames
+    
+    if not recording:
+        # Start recording
+        recording = True
+        video_frames = []
+        print("🟢 Recording started! Speak to the camera...")
+        
+        # Update UI
+        display(Javascript("updateStatus(true)"))
+        display(Javascript("document.getElementById('result').innerHTML = '🎙️ Recording... Press SPACE to stop and process'"))
+        
+    else:
+        # Stop recording and process
+        recording = False
+        print("🔴 Recording stopped! Processing...")
+        
+        if len(video_frames) >= 50:  # At least 2 seconds at 25fps
+            process_recorded_video()
+        else:
+            print("⚠️ Recording too short, need at least 2 seconds")
+            display(Javascript("document.getElementById('result').innerHTML = '⚠️ Recording too short, need at least 2 seconds'"))
+        
+        # Update UI
+        display(Javascript("updateStatus(false)"))
+        display(Javascript("document.getElementById('result').innerHTML = 'Ready! Press SPACE to record again'"))
+
+def process_recorded_video():
+    global video_frames
+    
+    try:
+        # Create temporary video file
+        output_path = tempfile.mktemp(suffix='.mp4')
+        height, width = video_frames[0].shape
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, 25, (width, height), False)
+        
+        for frame in video_frames:
+            out.write(frame)
+        out.release()
+        
+        print(f"🔄 Processing {len(video_frames)} frames...")
+        
+        # Process with pipeline
+        result = pipeline(output_path)
+        print(f"🗣️ Result: {result}")
+        
+        # Update UI with result
+        display(Javascript(f"document.getElementById('result').innerHTML = '🗣️ Result: {result}'"))
+        
+        # Clean up
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        
+    except Exception as e:
+        print(f"❌ Processing error: {e}")
+        display(Javascript("document.getElementById('result').innerHTML = '❌ Processing error: ' + '" + str(e) + "'"))
+
+print("✅ Real-time lip reading ready!")
+print("📹 Webcam preview visible above")
+print("🎮 Press SPACE to start/stop recording")
+print("📝 Results appear when recording stops")

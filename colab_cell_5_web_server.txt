@@ -1,0 +1,80 @@
+# ============================
+# Cell 5: Launch Web Server with ngrok
+# ============================
+
+import os
+import sys
+import subprocess
+import threading
+import time
+from flask import Flask
+from pyngrok import ngrok
+
+print("🌐 Launching Lip Reading Web Server...")
+
+# Change to repo directory
+os.chdir(REPO_DIR)
+sys.path.insert(0, REPO_DIR)
+
+# Load the model for the web server
+print("📥 Loading model for web server...")
+CONFIG_PATH = f"{REPO_DIR}/configs/LRS3_V_WER19.1.ini"
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+from pipelines.pipeline import InferencePipeline
+pipeline = InferencePipeline(
+    config_filename=CONFIG_PATH,
+    detector="mediapipe",
+    face_track=True,
+    device=device
+)
+
+print(f"✅ Model loaded on {device}")
+
+# Import and configure Flask app
+from web.app import app
+app.pipeline = pipeline  # Make pipeline available to Flask routes
+
+print("🚀 Starting Flask web server...")
+
+# Start Flask server in background thread
+def run_flask():
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
+
+# Wait for Flask to start
+time.sleep(3)
+
+# Setup ngrok
+print("🔧 Setting up ngrok tunnel...")
+ngrok.set_auth_token("30xzV3aCADfX3hfNJflBDvKZgnZ_3i1LLR3zGnUxZzSjcG1a3")
+
+try:
+    # Create ngrok tunnel
+    public_url = ngrok.connect(5000)
+    print(f"🌐 Public URL: {public_url}")
+    
+    print("\n" + "="*60)
+    print("🎉 WEB SERVER READY!")
+    print("="*60)
+    print(f"🌐 Access your website at: {public_url}")
+    print("📁 Video Upload: Upload MP4/AVI files for processing")
+    print("📹 Webcam: Real-time lip reading from your camera")
+    print("⚡ Models loaded and ready for processing")
+    print("="*60)
+    print("\n💡 Keep this cell running to keep the server alive!")
+    print("🔄 To stop: Interrupt this cell (Ctrl+C)")
+    
+    # Keep the cell alive
+    while True:
+        time.sleep(1)
+        
+except Exception as e:
+    print(f"❌ Error setting up ngrok: {e}")
+    print("💡 Flask server is still running locally at http://localhost:5000")
+    
+    # Keep Flask running
+    while True:
+        time.sleep(1)

@@ -1,68 +1,213 @@
-{% extends "base.html" %}
-
-{% block content %}
-<div class="tabs">
-    <button class="tab active" onclick="switchTab('upload')">📁 Video Upload</button>
-    <button class="tab" onclick="switchTab('webcam')">📹 Webcam</button>
-</div>
-
-<!-- Video Upload Tab -->
-<div id="upload-tab" class="tab-content active">
-    <h2>Upload Video for Lip Reading</h2>
-    
-    <div class="upload-area" onclick="document.getElementById('videoFile').click()">
-        <div>📁 Click to select video file</div>
-        <div style="margin-top: 10px; color: #666;">Supported: MP4, AVI, MOV</div>
-    </div>
-    
-    <input type="file" id="videoFile" accept="video/*" onchange="handleVideoUpload(this)">
-    
-    <div class="controls">
-        <button class="btn" id="processBtn" onclick="processVideo()" disabled>
-            Process Video
-        </button>
-    </div>
-    
-    <div id="uploadStatus" class="status ready">Ready to upload video</div>
-    <div id="uploadResult" class="result-box">Results will appear here...</div>
-</div>
-
-<!-- Webcam Tab -->
-<div id="webcam-tab" class="tab-content">
-    <h2>Real-time Webcam Lip Reading</h2>
-    
-    <div class="webcam-container">
-        <video id="webcamVideo" class="video-element" autoplay muted></video>
-        <canvas id="webcamCanvas" class="video-element" style="display: none;"></canvas>
-    </div>
-    
-    <div class="indicators">
-        <div class="indicator">
-            <div id="recordIndicator" class="indicator-dot"></div>
-            <span id="recordStatus">Ready</span>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lip Reading Web Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .tabs {
+            display: flex;
+            background: #333;
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 15px;
+            text-align: center;
+            color: white;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .tab.active {
+            background: #007bff;
+        }
+        
+        .tab:hover {
+            background: #555;
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 30px;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            transition: border 0.3s;
+        }
+        
+        .upload-area:hover {
+            border-color: #007bff;
+        }
+        
+        .upload-area.dragover {
+            border-color: #007bff;
+            background: #f0f8ff;
+        }
+        
+        .file-input {
+            display: none;
+        }
+        
+        .upload-btn {
+            background: #007bff;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+        
+        .upload-btn:hover {
+            background: #0056b3;
+        }
+        
+        .webcam-container {
+            text-align: center;
+        }
+        
+        #webcam {
+            width: 100%;
+            max-width: 640px;
+            height: 480px;
+            border: 3px solid #ccc;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        
+        .controls {
+            margin: 20px 0;
+        }
+        
+        .record-btn {
+            background: #dc3545;
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 18px;
+            margin: 0 10px;
+        }
+        
+        .record-btn.recording {
+            background: #28a745;
+        }
+        
+        .status {
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+        }
+        
+        .result {
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+            background: #e7f3ff;
+            border-left: 4px solid #007bff;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        
+        .error {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+            color: #721c24;
+        }
+        
+        .success {
+            background: #d4edda;
+            border-left-color: #28a745;
+            color: #155724;
+        }
+        
+        .instructions {
+            background: #fff3cd;
+            border-left-color: #ffc107;
+            color: #856404;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('upload')">📁 Video Upload</div>
+            <div class="tab" onclick="switchTab('webcam')">📹 Live Webcam</div>
         </div>
-        <div class="indicator">
-            <div id="faceIndicator" class="indicator-dot"></div>
-            <span>Face Detected</span>
+        
+        <!-- Video Upload Tab -->
+        <div id="upload" class="tab-content active">
+            <h2>Upload Video for Lip Reading</h2>
+            <div class="instructions">
+                <strong>Instructions:</strong> Upload an MP4/AVI video file, then click "Process Video" to analyze it.
+            </div>
+            
+            <div class="upload-area" id="uploadArea">
+                <p>📁 Drag & drop video file here or click to select</p>
+                <input type="file" id="videoFile" class="file-input" accept="video/*">
+                <button class="upload-btn" onclick="document.getElementById('videoFile').click()">Choose File</button>
+            </div>
+            
+            <div id="fileInfo" style="display: none;">
+                <p><strong>Selected file:</strong> <span id="fileName"></span></p>
+                <button class="upload-btn" onclick="processVideo()">Process Video</button>
+            </div>
+            
+            <div id="uploadResult"></div>
         </div>
-        <div class="indicator">
-            <div id="speakIndicator" class="indicator-dot"></div>
-            <span>Speaking</span>
+        
+        <!-- Live Webcam Tab -->
+        <div id="webcam" class="tab-content">
+            <h2>Live Webcam Lip Reading</h2>
+            <div class="instructions">
+                <strong>Instructions:</strong> Click "Start Recording" to begin, speak to the camera, then click "Stop Recording" to process.
+                <br><strong>Keyboard shortcuts:</strong> SPACE to start/stop recording
+            </div>
+            
+            <div class="webcam-container">
+                <video id="webcam" autoplay muted></video>
+                <div class="controls">
+                    <button class="record-btn" id="recordBtn" onclick="toggleRecording()">Start Recording</button>
+                    <span id="recordingStatus">Ready to record</span>
+                </div>
+                <div id="webcamResult"></div>
+            </div>
         </div>
     </div>
-    
-    <div class="controls">
-        <button class="btn" id="startStopBtn" onclick="toggleRecording()">
-            Start Recording
-        </button>
-        <button class="btn" id="processCurrentBtn" onclick="processCurrentBuffer()" disabled>
-            Process Current Buffer
-        </button>
-    </div>
-    
-    <div id="webcamStatus" class="status ready">
-        Press "Start Recording" to begin. Record for 2-5 seconds, then stop to process.
-    </div>
-    <div id="webcamResult" class="result-box">Results will appear here...</div>
-</div>
-{% endblock %}
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

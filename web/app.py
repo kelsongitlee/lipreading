@@ -1,122 +1,132 @@
-"""
-Main Flask Application for Lip Reading Web Interface
-"""
+from flask import Flask, render_template, request, jsonify
 import os
-import sys
-from flask import Flask
+import tempfile
+import cv2
+import numpy as np
+import base64
+from werkzeug.utils import secure_filename
 
-# Add project root to Python path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
+app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max
 
-from web.utils.model_loader import ModelLoader
-from web.utils.face_detector import FaceDetector
-from web.routes import upload_bp, webcam_bp
+# Ensure upload directory exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-def create_app():
-    """Create and configure Flask application"""
-    app = Flask(__name__)
-    
-    # Configuration
-    app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
-    app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
-    app.config['SECRET_KEY'] = 'lip-reading-secret-key'
-    
-    # Ensure upload directory exists
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    
-    # Initialize global components
-    print("🚀 Initializing Lip Reading Models...")
-    model_loader = ModelLoader()
-    face_detector = FaceDetector()
-    
-    # Store in app context
-    app.model_loader = model_loader
-    app.face_detector = face_detector
-    
-    # Register blueprints
-    app.register_blueprint(upload_bp)
-    app.register_blueprint(webcam_bp)
-    
-    # Main route
-    @app.route('/')
-    def index():
-        from flask import render_template
-        return render_template('index.html')
-    
-    return app
+# Global variables for webcam
+video_frames = []
+recording = False
+pipeline = None
 
-def setup_ngrok(port=5000):
-    """Setup ngrok tunnel with authentication"""
-    import subprocess
-    import time
-    
-    print("🔧 Setting up ngrok...")
-    
-    # Install ngrok if not exists
-    if not os.path.exists('./ngrok'):
-        os.system("wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz")
-        os.system("tar -xzf ngrok-v3-stable-linux-amd64.tgz")
-        os.system("chmod +x ngrok")
-    
-    # Set auth token
-    auth_token = "30xzV3aCADfX3hfNJflBDvKZgnZ_3i1LLR3zGnUxZzSjcG1a3"
-    os.system(f"./ngrok config add-authtoken {auth_token}")
-    
-    # Start ngrok tunnel
-    print(f"🚀 Starting ngrok tunnel on port {port}...")
-    process = subprocess.Popen(
-        ["./ngrok", "http", str(port), "--log=stdout"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    
-    # Wait for tunnel to start
-    time.sleep(3)
-    
-    # Get public URL
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/upload', methods=['POST'])
+def upload_video():
     try:
-        result = subprocess.run(
-            ["curl", "-s", "http://localhost:4040/api/tunnels"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
+        if 'video' not in request.files:
+            return jsonify({'error': 'No video file'}), 400
         
-        import json
-        tunnels = json.loads(result.stdout)
+        file = request.files['video']
+        if file.filename == '':
+            return jsonify({'error': 'No file selected'}), 400
         
-        if 'tunnels' in tunnels and len(tunnels['tunnels']) > 0:
-            public_url = tunnels['tunnels'][0]['public_url']
-            print(f"🌐 Public URL: {public_url}")
-            return public_url
+        if file:
+            # Save uploaded file temporarily
+            filename = secure_filename(file.filename)
+            temp_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(temp_path)
+            
+            # Process video (this will be implemented when model is loaded)
+            if pipeline:
+                try:
+                    result = pipeline(temp_path)
+                    # Clean up
+                    os.remove(temp_path)
+                    return jsonify({'success': True, 'result': result})
+                except Exception as e:
+                    os.remove(temp_path)
+                    return jsonify({'error': f'Processing failed: {str(e)}'}), 500
+            else:
+                os.remove(temp_path)
+                return jsonify({'error': 'Model not loaded'}), 500
+                
     except Exception as e:
-        print(f"⚠️ Could not get ngrok URL: {e}")
+        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
+
+@app.route('/webcam/start', methods=['POST'])
+def start_recording():
+    global recording, video_frames
+    recording = True
+    video_frames = []
+    return jsonify({'success': True, 'status': 'Recording started'})
+
+@app.route('/webcam/stop', methods=['POST'])
+def stop_recording():
+    global recording, video_frames
+    recording = False
     
-    return None
+    if len(video_frames) < 50:  # At least 2 seconds
+        return jsonify({'error': 'Recording too short, need at least 2 seconds'}), 400
+    
+    try:
+        # Create temporary video file
+        output_path = tempfile.mktemp(suffix='.mp4')
+        height, width = video_frames[0].shape
+        
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, 25, (width, height), False)
+        
+        for frame in video_frames:
+            out.write(frame)
+        out.release()
+        
+        # Process with pipeline
+        if pipeline:
+            result = pipeline(output_path)
+            # Clean up
+            os.remove(output_path)
+            return jsonify({'success': True, 'result': result})
+        else:
+            os.remove(output_path)
+            return jsonify({'error': 'Model not loaded'}), 500
+            
+    except Exception as e:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        return jsonify({'error': f'Processing failed: {str(e)}'}), 500
+
+@app.route('/webcam/frame', methods=['POST'])
+def process_frame():
+    global video_frames, recording
+    if not recording:
+        return jsonify({'success': False, 'message': 'Not recording'})
+    
+    try:
+        # Get base64 frame data
+        data = request.json
+        frame_data = data.get('frame', '').split(',')[1]  # Remove data:image/jpeg;base64,
+        
+        # Decode frame
+        image_bytes = base64.b64decode(frame_data)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        video_frames.append(frame_gray)
+        return jsonify({'success': True, 'frames_count': len(video_frames)})
+        
+    except Exception as e:
+        return jsonify({'error': f'Frame processing failed: {str(e)}'}), 500
+
+@app.route('/status')
+def status():
+    return jsonify({
+        'model_loaded': pipeline is not None,
+        'recording': recording,
+        'frames_count': len(video_frames)
+    })
 
 if __name__ == '__main__':
-    try:
-        # Create Flask app
-        app = create_app()
-        
-        # Setup ngrok
-        public_url = setup_ngrok(5000)
-        
-        print("\n" + "="*60)
-        print("🎬 LIP READING WEB SERVER READY!")
-        print("="*60)
-        print(f"🌐 Access your website at: {public_url or 'Check ngrok output above'}")
-        print("📁 Video Upload: Upload MP4/AVI files for processing")
-        print("📹 Webcam: Real-time lip reading from your camera")
-        print("⚡ Models loaded and ready for processing")
-        print("="*60)
-        
-        # Start Flask server
-        app.run(host='0.0.0.0', port=5000, debug=False)
-        
-    except Exception as e:
-        print(f"❌ Server startup error: {e}")
-        import traceback
-        traceback.print_exc()
+    app.run(host='0.0.0.0', port=5000, debug=False)

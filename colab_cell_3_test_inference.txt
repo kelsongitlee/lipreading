@@ -1,0 +1,29 @@
+# ============================
+# Cell 3: Test Video Inference
+# ============================
+
+print("🎬 Testing video inference...")
+
+# Change to repo directory
+os.chdir(REPO_DIR)
+sys.path.insert(0, REPO_DIR)
+
+# Test with a video sample
+VIDEO_PATH = f"{REPO_DIR}/video_samples/video_muted1.mp4"
+CONFIG_PATH = f"{REPO_DIR}/configs/LRS3_V_WER19.1.ini"
+
+if not os.path.exists(VIDEO_PATH):
+    print(f"❌ Video not found: {VIDEO_PATH}")
+    print("💡 Available videos:")
+    if os.path.exists(f"{REPO_DIR}/video_samples"):
+        videos = [f for f in os.listdir(f"{REPO_DIR}/video_samples") if f.endswith(('.mp4', '.avi', '.mov'))]
+        for v in videos:
+            print(f"   - {v}")
+else:
+    print(f"✅ Testing with: {VIDEO_PATH}")
+    
+    # Run inference
+    cmd = f'python infer.py config_filename={CONFIG_PATH} data_filename="{VIDEO_PATH}" detector=mediapipe gpu_idx=0'
+    run(cmd, f"Running inference on: {os.path.basename(VIDEO_PATH)}")
+    
+    print("\n✅ Inference test complete! Look for 'hyp: <transcription>' above.")

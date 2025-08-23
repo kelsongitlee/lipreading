@@ -1,0 +1,73 @@
+# ============================
+# Cell 1: Setup Environment
+# ============================
+
+import os
+import subprocess
+import pathlib
+import shutil
+import sys
+
+print("🚀 Setting up Lip Reading Environment...")
+
+# Repository setup
+REPO_URL = "https://github.com/kelsongitlee/lipreading.git"
+REPO_DIR = "/content/lipreading"
+
+# Google Drive IDs for models
+MAIN_MODEL_ID = "1JkOPriFqzoHdZZl2XEsaNMnos9hxq0mO"  # LRS3_V_WER19.1
+LM_MODEL_ID = "1pl7-S77Bo6Tb5Sprl-rbjJCSTGCWxkMo"    # lm_en_subword
+VIDEO_SAMPLES_ID = "1gTbqLsCbuj87MT-_wviKjfMdl58l6ECZ"  # Video samples
+
+def run(cmd, desc=None):
+    print(f"\n{'='*60}")
+    print(desc or cmd)
+    print(f"{'='*60}")
+    result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
+    if result.stdout.strip():
+        print(result.stdout)
+    if result.returncode != 0:
+        print(f"❌ Error: {result.stderr}")
+        raise RuntimeError(f"Command failed: {cmd}")
+    return result
+
+# 1. Clone repository
+if not os.path.isdir(REPO_DIR):
+    run(f"git clone {REPO_URL} {REPO_DIR}", "Cloning repository")
+else:
+    run(f"cd {REPO_DIR} && git pull", "Updating repository")
+
+# 2. Install PyTorch with CUDA
+run("pip uninstall -y torch torchvision torchaudio || true", "Removing old PyTorch")
+run("pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118", "Installing PyTorch CUDA")
+
+# 3. Install project dependencies (skip problematic packages)
+req_content = """
+opencv-python-headless
+numpy
+Pillow
+scipy
+scikit-image
+librosa
+soundfile
+av
+ffmpeg-python
+torchaudio
+torchvision
+configparser
+mediapipe
+hydra-core
+omegaconf
+tqdm
+gdown
+"""
+
+with open(f"{REPO_DIR}/requirements_colab.txt", "w") as f:
+    f.write(req_content.strip())
+
+run(f"cd {REPO_DIR} && pip install -r requirements_colab.txt", "Installing project dependencies")
+
+# 4. Install system packages
+run("apt-get update && apt-get install -y ffmpeg", "Installing system ffmpeg")
+
+print("✅ Environment setup complete!")
