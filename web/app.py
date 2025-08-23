@@ -18,6 +18,12 @@ video_frames = []
 recording = False
 pipeline = None
 
+# Function to set pipeline from external source
+def set_pipeline(model_pipeline):
+    global pipeline
+    pipeline = model_pipeline
+    print(f"✅ Pipeline set in Flask app: {pipeline is not None}")
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -124,9 +130,31 @@ def process_frame():
 def status():
     return jsonify({
         'model_loaded': pipeline is not None,
+        'pipeline_type': str(type(pipeline)) if pipeline else 'None',
         'recording': recording,
         'frames_count': len(video_frames)
     })
+
+@app.route('/debug')
+def debug():
+    return jsonify({
+        'pipeline_exists': pipeline is not None,
+        'pipeline_type': str(type(pipeline)) if pipeline else 'None',
+        'pipeline_has_call': hasattr(pipeline, '__call__') if pipeline else False,
+        'upload_folder': app.config['UPLOAD_FOLDER'],
+        'upload_folder_exists': os.path.exists(app.config['UPLOAD_FOLDER'])
+    })
+
+@app.route('/set_pipeline', methods=['POST'])
+def set_pipeline_route():
+    global pipeline
+    try:
+        # This is a simple way to check if pipeline is working
+        # In production, you'd want proper authentication
+        pipeline = "TEST_PIPELINE"  # Just for testing
+        return jsonify({'success': True, 'message': 'Pipeline set to test mode'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)

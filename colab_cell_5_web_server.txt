@@ -7,6 +7,8 @@ import sys
 import subprocess
 import threading
 import time
+import torch
+import requests
 from flask import Flask
 from pyngrok import ngrok
 
@@ -33,19 +35,71 @@ print(f"✅ Model loaded on {device}")
 
 # Import and configure Flask app
 from web.app import app
-app.pipeline = pipeline  # Make pipeline available to Flask routes
+import web.app as web_module
+
+# Set pipeline using the module's function
+if hasattr(web_module, 'set_pipeline'):
+    web_module.set_pipeline(pipeline)
+    print("✅ Pipeline set in Flask app")
+else:
+    print("❌ set_pipeline function not found in web.app")
+    # Try to set it directly
+    web_module.pipeline = pipeline
+    print("✅ Pipeline set directly in web.app module")
+    
+    # Also try to set it as a global variable in the module
+    if hasattr(web_module, 'app'):
+        web_module.app.config['PIPELINE'] = pipeline
+        print("✅ Pipeline also set in Flask app config")
+
+# Verify pipeline is accessible
+try:
+    test_pipeline = web_module.pipeline
+    print(f"✅ Pipeline verification: {type(test_pipeline)}")
+except Exception as e:
+    print(f"❌ Pipeline verification failed: {e}")
 
 print("🚀 Starting Flask web server...")
 
 # Start Flask server in background thread
 def run_flask():
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    try:
+        # Try different ports if 5000 is busy
+        for port in [5000, 5001, 5002, 5003, 5004]:
+            try:
+                app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+                break
+            except OSError as e:
+                if "Address already in use" in str(e):
+                    print(f"⚠️ Port {port} busy, trying next...")
+                    continue
+                else:
+                    raise e
+    except Exception as e:
+        print(f"❌ Flask server error: {e}")
 
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
-# Wait for Flask to start
-time.sleep(3)
+# Wait for Flask to start and find the port
+time.sleep(5)
+
+# Check if Flask is actually running
+import requests
+flask_running = False
+for port in [5000, 5001, 5002, 5003, 5004]:
+    try:
+        response = requests.get(f"http://localhost:{port}/status", timeout=2)
+        if response.status_code == 200:
+            print(f"✅ Flask server running on port {port}")
+            flask_running = True
+            break
+    except:
+        continue
+
+if not flask_running:
+    print("⚠️ Flask server may not be running properly")
+    print("💡 Check the background thread for errors")
 
 # Setup ngrok
 print("🔧 Setting up ngrok tunnel...")

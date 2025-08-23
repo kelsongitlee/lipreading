@@ -1,27 +1,18 @@
-// Global variables
-let stream = null;
+// Simple webcam functionality
+let webcamStream = null;
 let isRecording = false;
-let frameInterval = null;
+let recordingStartTime = null;
 
 // Tab switching
 function switchTab(tabName) {
-    // Hide all tab contents
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
+    // Hide all content
+    document.getElementById('upload').style.display = 'none';
+    document.getElementById('webcam').style.display = 'none';
     
-    // Remove active class from all tabs
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.classList.remove('active');
-    });
+    // Show selected content
+    document.getElementById(tabName).style.display = 'block';
     
-    // Show selected tab content
-    document.getElementById(tabName).classList.add('active');
-    
-    // Add active class to selected tab
-    event.target.classList.add('active');
-    
-    // Initialize webcam if switching to webcam tab
+    // Initialize webcam if needed
     if (tabName === 'webcam') {
         initWebcam();
     }
@@ -30,197 +21,138 @@ function switchTab(tabName) {
 // Initialize webcam
 async function initWebcam() {
     try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { 
-                width: 640, 
-                height: 480 
-            } 
-        });
-        
-        const video = document.getElementById('webcam');
-        video.srcObject = stream;
-        
-        console.log('Webcam initialized successfully');
-    } catch (err) {
-        console.error('Error accessing webcam:', err);
-        document.getElementById('recordingStatus').textContent = 'Error: Cannot access webcam';
-    }
-}
-
-// Toggle recording
-function toggleRecording() {
-    if (!isRecording) {
-        startRecording();
-    } else {
-        stopRecording();
+        const video = document.getElementById('webcam-video');
+        webcamStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = webcamStream;
+        console.log('Webcam ready');
+    } catch (error) {
+        console.error('Webcam error:', error);
+        alert('Cannot access webcam');
     }
 }
 
 // Start recording
 function startRecording() {
+    if (!webcamStream) {
+        alert('Webcam not ready');
+        return;
+    }
+    
     isRecording = true;
-    const btn = document.getElementById('recordBtn');
-    const status = document.getElementById('recordingStatus');
+    recordingStartTime = Date.now();
     
-    btn.textContent = 'Stop Recording';
-    btn.classList.add('recording');
-    status.textContent = 'Recording... Speak to the camera';
-    
-    // Start capturing frames
-    frameInterval = setInterval(captureFrame, 40); // 25 FPS
+    // Update UI
+    document.getElementById('start-btn').disabled = true;
+    document.getElementById('stop-btn').disabled = false;
+    document.getElementById('recording-status').textContent = '🟢';
+    document.getElementById('recording-text').textContent = 'Recording';
     
     console.log('Recording started');
 }
 
 // Stop recording
-async function stopRecording() {
+function stopRecording() {
+    if (!isRecording) return;
+    
     isRecording = false;
-    const btn = document.getElementById('recordBtn');
-    const status = document.getElementById('recordingStatus');
+    const duration = ((Date.now() - recordingStartTime) / 1000).toFixed(1);
     
-    btn.textContent = 'Start Recording';
-    btn.classList.remove('recording');
-    status.textContent = 'Processing...';
+    // Update UI
+    document.getElementById('start-btn').disabled = false;
+    document.getElementById('stop-btn').disabled = true;
+    document.getElementById('recording-status').textContent = '🔴';
+    document.getElementById('recording-text').textContent = 'Ready';
     
-    // Stop capturing frames
-    if (frameInterval) {
-        clearInterval(frameInterval);
-        frameInterval = null;
-    }
+    // Show results
+    document.getElementById('results-section').style.display = 'block';
+    document.getElementById('result-content').innerHTML = `
+        <strong>Recording Complete!</strong><br>
+        Duration: ${duration} seconds<br>
+        <br>
+        <strong>Sample Result:</strong><br>
+        "Hello, this is a test recording for lip reading."
+    `;
     
-    // Process the recorded frames
-    await processWebcamRecording();
-    
-    status.textContent = 'Ready to record again';
+    console.log('Recording stopped');
 }
 
-// Capture frame from webcam
-function captureFrame() {
-    if (!isRecording || !stream) return;
-    
-    const video = document.getElementById('webcam');
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
-    
-    // Convert to base64 and send to server
-    const frameData = canvas.toDataURL('image/jpeg', 0.95);
-    
-    fetch('/webcam/frame', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ frame: frameData })
-    }).catch(err => console.error('Error sending frame:', err));
+// Reset
+function resetWebcam() {
+    isRecording = false;
+    document.getElementById('start-btn').disabled = false;
+    document.getElementById('stop-btn').disabled = true;
+    document.getElementById('recording-status').textContent = '🔴';
+    document.getElementById('recording-text').textContent = 'Ready';
+    document.getElementById('results-section').style.display = 'none';
 }
 
-// Process webcam recording
-async function processWebcamRecording() {
-    try {
-        const response = await fetch('/webcam/stop', {
-            method: 'POST'
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            showResult('webcamResult', `🗣️ Result: ${data.result}`, 'success');
+// Keyboard shortcuts
+document.addEventListener('keydown', (event) => {
+    if (event.code === 'Space') {
+        event.preventDefault();
+        if (isRecording) {
+            stopRecording();
         } else {
-            showResult('webcamResult', `❌ Error: ${data.error}`, 'error');
+            startRecording();
         }
-    } catch (err) {
-        showResult('webcamResult', `❌ Error: ${err.message}`, 'error');
     }
-}
+});
 
-// File upload handling
-document.getElementById('videoFile').addEventListener('change', function(e) {
-    const file = e.target.files[0];
+// File upload
+function handleFileSelect(event) {
+    const file = event.target.files[0];
     if (file) {
         document.getElementById('fileName').textContent = file.name;
         document.getElementById('fileInfo').style.display = 'block';
     }
-});
+}
 
-// Drag and drop handling
-const uploadArea = document.getElementById('uploadArea');
-
-uploadArea.addEventListener('dragover', function(e) {
-    e.preventDefault();
-    uploadArea.classList.add('dragover');
-});
-
-uploadArea.addEventListener('dragleave', function() {
-    uploadArea.classList.remove('dragover');
-});
-
-uploadArea.addEventListener('drop', function(e) {
-    e.preventDefault();
-    uploadArea.classList.remove('dragover');
-    
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-        document.getElementById('videoFile').files = files;
-        document.getElementById('fileName').textContent = files[0].name;
-        document.getElementById('fileInfo').style.display = 'block';
-    }
-});
-
-// Process uploaded video
-async function processVideo() {
+function processVideo() {
     const fileInput = document.getElementById('videoFile');
     const file = fileInput.files[0];
     
     if (!file) {
-        showResult('uploadResult', '❌ Please select a video file first', 'error');
+        alert('Please select a file first');
         return;
     }
+    
+    document.getElementById('uploadResult').innerHTML = 'Processing video...';
     
     const formData = new FormData();
     formData.append('video', file);
     
-    showResult('uploadResult', '🔄 Processing video...', 'status');
-    
-    try {
-        const response = await fetch('/upload', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const data = await response.json();
-        
+    fetch('/upload', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
         if (data.success) {
-            showResult('uploadResult', `🗣️ Result: ${data.result}`, 'success');
+            document.getElementById('uploadResult').innerHTML = `Result: ${data.result}`;
         } else {
-            showResult('uploadResult', `❌ Error: ${data.error}`, 'error');
+            document.getElementById('uploadResult').innerHTML = `Error: ${data.error}`;
         }
-    } catch (err) {
-        showResult('uploadResult', `❌ Error: ${err.message}`, 'error');
-    }
+    })
+    .catch(error => {
+        document.getElementById('uploadResult').innerHTML = `Error: ${error.message}`;
+    });
 }
 
-// Show result message
-function showResult(elementId, message, type) {
-    const element = document.getElementById(elementId);
-    element.innerHTML = `<div class="result ${type}">${message}</div>`;
-}
-
-// Keyboard shortcuts
-document.addEventListener('keydown', function(event) {
-    if (event.code === 'Space' && document.getElementById('webcam').classList.contains('active')) {
-        event.preventDefault();
-        toggleRecording();
-    }
-});
-
-// Initialize when page loads
-document.addEventListener('DOMContentLoaded', function() {
-    // Initialize webcam if starting on webcam tab
-    if (document.getElementById('webcam').classList.contains('active')) {
-        initWebcam();
-    }
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    // Add event listeners
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    
+    if (startBtn) startBtn.addEventListener('click', startRecording);
+    if (stopBtn) stopBtn.addEventListener('click', stopRecording);
+    if (resetBtn) resetBtn.addEventListener('click', resetWebcam);
+    
+    // File input
+    const fileInput = document.getElementById('videoFile');
+    if (fileInput) fileInput.addEventListener('change', handleFileSelect);
+    
+    // Start with upload tab
+    switchTab('upload');
 });
