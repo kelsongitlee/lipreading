@@ -127,15 +127,24 @@ class AVSR(torch.nn.Module):
             if hasattr(self.model, 'ctc') and self.model.ctc is not None and len(token_ids) > 0:
                 try:
                     # use CTC forced_align method for accurate frame-level alignment
-                    # enc_feats shape: (T, D) where T is number of frames
-                    T = enc_feats.shape[0]  # number of frames
+                    # enc_feats might be (T, D) or (B, T, D) - handle both cases
+                    if len(enc_feats.shape) == 3:
+                        # has batch dimension (B, T, D) - remove batch dimension
+                        enc_feats_2d = enc_feats.squeeze(0)  # (T, D)
+                        T = enc_feats_2d.shape[0]
+                    elif len(enc_feats.shape) == 2:
+                        # already 2D (T, D)
+                        enc_feats_2d = enc_feats
+                        T = enc_feats_2d.shape[0]
+                    else:
+                        raise ValueError(f"Unexpected enc_feats shape: {enc_feats.shape}")
                     
                     # convert token_ids to numpy array for forced_align
                     token_array = np.array(token_ids, dtype=np.int64)
                     
                     # perform CTC forced alignment
                     # forced_align expects (T, D) tensor and (L,) token array
-                    aligned_frames = self.model.ctc.forced_align(enc_feats, token_array, blank_id=0)
+                    aligned_frames = self.model.ctc.forced_align(enc_feats_2d, token_array, blank_id=0)
                     
                     # aligned_frames is a list of token IDs, one per frame
                     # group consecutive frames with same token to create word timestamps
