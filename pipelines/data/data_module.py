@@ -6,6 +6,12 @@
 
 import torch
 import torchaudio
+# CRITICAL: Import PyAV before torchvision to ensure it's available for torchvision.io.read_video()
+try:
+    import av
+except ImportError:
+    # PyAV not installed - torchvision will fail when trying to read video
+    pass
 import torchvision
 from .transforms import AudioTransform, VideoTransform
 

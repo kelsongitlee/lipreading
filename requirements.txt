@@ -6,7 +6,7 @@ scikit-image >= 0.13.0
 av >= 10.0.0
 six >= 1.16.0
 
-# PyTorch (auto-install in Colab)
+# PyTorch (auto-install in Colab, but required for local GPU)
 torch >= 1.9.0
 torchvision >= 0.10.0
 torchaudio >= 0.9.0
@@ -21,4 +21,18 @@ matplotlib >= 3.3.0
 tqdm >= 4.60.0
 
 # Audio/Video processing
-ffmpeg-python >= 0.2.0 
+ffmpeg-python >= 0.2.0
+librosa >= 0.9.0
+soundfile >= 0.10.0
+
+# Configuration management
+omegaconf >= 2.1.0
+
+# Google Drive download (for model downloads)
+gdown >= 4.0.0
+
+# Config parser (Python 3 compatibility)
+configparser >= 5.0.0
+
+# Subtitle generation (for CTC forced alignment)
+webvtt-py >= 0.4.6 

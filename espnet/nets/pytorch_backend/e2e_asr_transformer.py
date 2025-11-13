@@ -203,7 +203,9 @@ class E2E(torch.nn.Module):
     @property
     def attention_plot_class(self):
         """Return PlotAttentionReport."""
-        return PlotAttentionReport
+        # PlotAttentionReport may be None if chainer is not installed
+        from espnet.asr.asr_utils import PlotAttentionReport
+        return PlotAttentionReport  # type: ignore
 
     def __init__(self, odim, args, ignore_id=-1):
         """Construct an E2E object.
@@ -297,7 +299,10 @@ class E2E(torch.nn.Module):
 
     def scorers(self):
         """Scorers."""
-        return dict(decoder=self.decoder, ctc=CTCPrefixScorer(self.ctc, self.eos))
+        # ctc may be None, so only create CTCPrefixScorer if ctc exists
+        from espnet.nets.scorers.ctc import CTCPrefixScorer
+        ctc_scorer = CTCPrefixScorer(self.ctc, self.eos) if self.ctc is not None else None  # type: ignore
+        return dict(decoder=self.decoder, ctc=ctc_scorer)
 
     def encode(self, x, extract_resnet_feats=False):
         """Encode acoustic features.

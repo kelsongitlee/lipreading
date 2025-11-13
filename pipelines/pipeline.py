@@ -41,7 +41,9 @@ class InferencePipeline(torch.nn.Module):
         lm_weight = config.getfloat("decode", "lm_weight")
         beam_size = config.getint("decode", "beam_size")
 
-        self.dataloader = AVSRDataLoader(modality, speed_rate=input_v_fps/model_v_fps, detector=detector)
+        # speed_rate can be float (e.g., 25.0/25.0 = 1.0) - convert to float explicitly
+        speed_rate_float = float(input_v_fps / model_v_fps)
+        self.dataloader = AVSRDataLoader(modality, speed_rate=speed_rate_float, detector=detector)  # type: ignore
         self.model = AVSR(modality, model_path, model_conf, rnnlm, rnnlm_conf, penalty, ctc_weight, lm_weight, beam_size, device)
         if face_track and self.modality in ["video", "audiovisual"]:
             if detector == "mediapipe":
@@ -61,7 +63,11 @@ class InferencePipeline(torch.nn.Module):
             if isinstance(landmarks_filename, str):
                 landmarks = pickle.load(open(landmarks_filename, "rb"))
             else:
-                landmarks = self.landmarks_detector(data_filename)
+                # landmarks_detector can be None if face_track=False
+                if self.landmarks_detector is not None:
+                    landmarks = self.landmarks_detector(data_filename)  # type: ignore
+                else:
+                    landmarks = None
             return landmarks
 
 
@@ -71,3 +77,21 @@ class InferencePipeline(torch.nn.Module):
         data = self.dataloader.load_data(data_filename, landmarks)
         transcript = self.model.infer(data)
         return transcript
+    
+    def forward_with_alignment(self, data_filename, landmarks_filename=None, video_fps=25.0):
+        """
+        Process video with CTC forced alignment for subtitle generation
+        
+        Args:
+            data_filename: Path to video file
+            landmarks_filename: Optional path to landmarks file
+            video_fps: Video frame rate (default: 25.0 fps for AutoAVSR standard)
+            
+        Returns:
+            dict with 'transcription', 'word_timestamps', and 'frame_alignments' keys
+        """
+        assert os.path.isfile(data_filename), f"data_filename: {data_filename} does not exist."
+        landmarks = self.process_landmarks(data_filename, landmarks_filename)
+        data = self.dataloader.load_data(data_filename, landmarks)
+        result = self.model.infer_with_alignment(data, video_fps=video_fps)
+        return result
