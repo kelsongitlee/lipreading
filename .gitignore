@@ -60,12 +60,8 @@ logs/
 
 # Model files (too large for git - 3.6GB+)
 # These will be downloaded automatically in Colab using gdown
-# ignore all model files in benchmarks directory
-benchmarks/**/models/**/*.pth
-benchmarks/**/models/**/*.pt
-benchmarks/**/models/**/*.part
-benchmarks/**/language_models/**/*.pth
-benchmarks/**/language_models/**/*.pt
+# ignore entire benchmarks directory
+/benchmarks/
 
 # Downloaded models
 *.zip
