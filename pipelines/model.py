@@ -84,12 +84,16 @@ class AVSR(torch.nn.Module):
         """
         with torch.no_grad():
             # encode video to get features
+            # NOTE: encode() returns 2D tensor (T, D) because it squeezes batch dimension
             if isinstance(data, tuple):
                 # audiovisual mode - encode takes (x, aux_x)
                 enc_feats = self.model.encode(data[0].to(self.device), data[1].to(self.device))  # type: ignore
             else:
                 # video-only mode - encode takes only x (no aux_x parameter)
                 enc_feats = self.model.encode(data.to(self.device))  # type: ignore
+            
+            # ensure enc_feats is in correct format for alignment
+            # encode() may return (T, D) or (B, T, D) depending on model
             
             # get transcription using beam search
             nbest_hyps = self.beam_search(enc_feats)
@@ -128,27 +132,61 @@ class AVSR(torch.nn.Module):
                 try:
                     # use CTC forced_align method for accurate frame-level alignment
                     # enc_feats might be (T, D) or (B, T, D) - handle both cases
+                    # forced_align can handle both, but we need to determine T correctly
                     if len(enc_feats.shape) == 3:
-                        # has batch dimension (B, T, D) - remove batch dimension
-                        enc_feats_2d = enc_feats.squeeze(0)  # (T, D)
-                        T = enc_feats_2d.shape[0]
+                        # has batch dimension (B, T, D)
+                        if enc_feats.shape[0] == 1:
+                            # single batch - extract T from second dimension
+                            T = enc_feats.shape[1]
+                            enc_feats_for_align = enc_feats  # keep as (1, T, D)
+                        else:
+                            # multiple batches - use first batch
+                            T = enc_feats.shape[1]
+                            enc_feats_for_align = enc_feats[0:1]  # take first batch (1, T, D)
                     elif len(enc_feats.shape) == 2:
-                        # already 2D (T, D)
-                        enc_feats_2d = enc_feats
-                        T = enc_feats_2d.shape[0]
+                        # 2D (T, D) - forced_align will add batch dimension
+                        T = enc_feats.shape[0]
+                        enc_feats_for_align = enc_feats  # pass as (T, D) - forced_align handles it
                     else:
-                        raise ValueError(f"Unexpected enc_feats shape: {enc_feats.shape}")
+                        raise ValueError(f"Unexpected enc_feats shape: {enc_feats.shape}, expected 2D (T, D) or 3D (B, T, D)")
+                    
+                    # ensure enc_feats is on correct device
+                    if enc_feats_for_align.device != self.device:
+                        enc_feats_for_align = enc_feats_for_align.to(self.device)
                     
                     # convert token_ids to numpy array for forced_align
+                    if len(token_ids) == 0:
+                        raise ValueError("Empty token_ids - cannot perform alignment")
+                    
                     token_array = np.array(token_ids, dtype=np.int64)
                     
                     # perform CTC forced alignment
-                    # forced_align expects (T, D) tensor and (L,) token array
-                    aligned_frames = self.model.ctc.forced_align(enc_feats_2d, token_array, blank_id=0)
+                    # forced_align handles both 2D (T, D) and 3D (B, T, D) inputs
+                    aligned_frames = self.model.ctc.forced_align(enc_feats_for_align, token_array, blank_id=0)
                     
                     # aligned_frames is a list of token IDs, one per frame
-                    # group consecutive frames with same token to create word timestamps
-                    if len(aligned_frames) > 0:
+                    # map tokens to words from transcription using CTC alignment
+                    if len(aligned_frames) > 0 and len(token_ids) > 0:
+                        # get transcription words
+                        words = transcription.split()
+                        
+                        # create mapping: token_id -> word index (assuming sequential mapping)
+                        # tokens in token_ids correspond to words in transcription
+                        token_to_word_map = {}
+                        if len(token_ids) == len(words):
+                            # direct mapping: one token per word
+                            for i, token_id in enumerate(token_ids):
+                                if i < len(words):
+                                    token_to_word_map[token_id] = i
+                        else:
+                            # approximate mapping: distribute tokens across words
+                            tokens_per_word = len(token_ids) / len(words) if words else 0
+                            for i, token_id in enumerate(token_ids):
+                                word_idx = int(i / tokens_per_word) if tokens_per_word > 0 else 0
+                                if word_idx < len(words):
+                                    token_to_word_map[token_id] = word_idx
+                        
+                        # group consecutive frames with same token to create word timestamps
                         current_token = aligned_frames[0]
                         start_frame = 0
                         
@@ -162,28 +200,50 @@ class AVSR(torch.nn.Module):
                                     start_time = start_frame / video_fps
                                     end_time = min(end_frame / video_fps, T / video_fps)
                                     
-                                    # get word from token
-                                    word = self.token_list[current_token]
-                                    # clean up word (remove special tokens)
-                                    word = word.replace('<blank>', '').replace('<eos>', '').replace('<sos>', '').strip()
-                                    
-                                    if word and word not in ['', '<blank>', '<eos>', '<sos>']:
-                                        word_timestamps.append({
-                                            'word': word,
-                                            'start': start_time,
-                                            'end': end_time
-                                        })
+                                    # map token to word
+                                    if current_token in token_to_word_map:
+                                        word_idx = token_to_word_map[current_token]
+                                        if word_idx < len(words):
+                                            word = words[word_idx]
+                                            # check if we already have a timestamp for this word (merge if overlapping)
+                                            existing_idx = None
+                                            for i, ts in enumerate(word_timestamps):
+                                                if ts['word'] == word:
+                                                    # merge timestamps (extend end time)
+                                                    word_timestamps[i]['end'] = max(word_timestamps[i]['end'], end_time)
+                                                    existing_idx = i
+                                                    break
+                                            
+                                            if existing_idx is None:
+                                                word_timestamps.append({
+                                                    'word': word,
+                                                    'start': start_time,
+                                                    'end': end_time
+                                                })
                                     
                                     frame_alignments.append({
                                         'frame_start': start_frame,
                                         'frame_end': end_frame,
                                         'token_id': current_token,
-                                        'token': word
+                                        'token': self.token_list[current_token] if current_token < len(self.token_list) else ''
                                     })
                                 
                                 # start new token segment
                                 current_token = token_id
                                 start_frame = frame_idx
+                        
+                        # sort word timestamps by start time and merge overlapping/adjacent words
+                        if word_timestamps:
+                            word_timestamps.sort(key=lambda x: x['start'])
+                            # merge adjacent words with same or overlapping timestamps
+                            merged_timestamps = []
+                            for ts in word_timestamps:
+                                if merged_timestamps and ts['start'] <= merged_timestamps[-1]['end']:
+                                    # merge with previous
+                                    merged_timestamps[-1]['end'] = max(merged_timestamps[-1]['end'], ts['end'])
+                                else:
+                                    merged_timestamps.append(ts)
+                            word_timestamps = merged_timestamps
                     else:
                         # fallback: use simple word-level distribution
                         words = transcription.split()

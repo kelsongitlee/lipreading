@@ -177,7 +177,7 @@ class CTC(torch.nn.Module):
     def forced_align(self, h, y, blank_id=0):
         """forced alignment.
 
-        :param torch.Tensor h: hidden state sequence, 2d tensor (T, D)
+        :param torch.Tensor h: hidden state sequence, 2d tensor (T, D) or 3d tensor (B, T, D)
         :param torch.Tensor y: id sequence tensor 1d tensor (L)
         :param int y: blank symbol index
         :return: best alignment results
@@ -193,8 +193,40 @@ class CTC(torch.nn.Module):
             label = np.append(label, label[0])
             return label
 
-        lpz = self.log_softmax(h)
-        lpz = lpz.squeeze(0)
+        # CRITICAL FIX: handle both 2D (T, D) and 3D (B, T, D) inputs properly
+        # log_softmax expects 3D (B, T, D), so ensure we have the right shape
+        needs_squeeze = False
+        
+        # normalize input to 3D tensor (B, T, D)
+        if len(h.shape) == 2:
+            # 2D input (T, D) - add batch dimension
+            h = h.unsqueeze(0)  # (T, D) -> (1, T, D)
+            needs_squeeze = True
+        elif len(h.shape) == 3:
+            # 3D input (B, T, D) - already correct format
+            if h.shape[0] == 1:
+                needs_squeeze = True  # will squeeze later
+        else:
+            raise ValueError(f"Unexpected input shape for forced_align: {h.shape}, expected 2D (T, D) or 3D (B, T, D)")
+        
+        # ensure h is 3D before calling log_softmax
+        if len(h.shape) != 3:
+            raise ValueError(f"h must be 3D before log_softmax, got shape: {h.shape}")
+        
+        # apply dropout and linear layer - ctc_lo expects (B, T, D) and outputs (B, T, odim)
+        h_dropout = self.dropout(h)  # (B, T, D)
+        ctc_lo_output = self.ctc_lo(h_dropout)  # (B, T, odim)
+        
+        # verify output is 3D
+        if len(ctc_lo_output.shape) != 3:
+            raise ValueError(f"ctc_lo must output 3D tensor (B, T, odim), got shape: {ctc_lo_output.shape}")
+        
+        # apply log_softmax directly on ctc_lo output with dim=2 (dimension 2 is odim)
+        lpz = F.log_softmax(ctc_lo_output, dim=2)  # (B, T, odim)
+        
+        # remove batch dimension if we added it (to match original input format)
+        if needs_squeeze:
+            lpz = lpz.squeeze(0)  # (1, T, odim) -> (T, odim)
 
         y_int = interpolate_blank(y, blank_id)
 
