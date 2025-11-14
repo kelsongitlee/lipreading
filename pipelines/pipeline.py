@@ -45,6 +45,8 @@ class InferencePipeline(torch.nn.Module):
         speed_rate_float = float(input_v_fps / model_v_fps)
         self.dataloader = AVSRDataLoader(modality, speed_rate=speed_rate_float, detector=detector)  # type: ignore
         self.model = AVSR(modality, model_path, model_conf, rnnlm, rnnlm_conf, penalty, ctc_weight, lm_weight, beam_size, device)
+        # store config filename for later use in forward_with_alignment
+        self.config_filename = config_filename
         if face_track and self.modality in ["video", "audiovisual"]:
             if detector == "mediapipe":
                 from pipelines.detectors.mediapipe.detector import LandmarksDetector
@@ -91,7 +93,43 @@ class InferencePipeline(torch.nn.Module):
             dict with 'transcription', 'word_timestamps', and 'frame_alignments' keys
         """
         assert os.path.isfile(data_filename), f"data_filename: {data_filename} does not exist."
+        
+        # CRITICAL FIX: Calculate speed_rate based on actual video FPS, not config file
+        # This prevents videos from appearing sped up when they have different FPS than expected
+        import cv2
+        actual_video_fps = video_fps  # use provided video_fps if available
+        try:
+            cap = cv2.VideoCapture(data_filename)
+            if cap.isOpened():
+                detected_fps = cap.get(cv2.CAP_PROP_FPS)
+                if detected_fps and detected_fps > 0:
+                    actual_video_fps = float(detected_fps)
+                    print(f"[PIPELINE] Detected video FPS: {actual_video_fps}")
+                cap.release()
+        except Exception as e:
+            print(f"[PIPELINE] Warning: Could not detect video FPS, using provided video_fps={video_fps}: {e}")
+        
+        # get model_v_fps from config (should be 25.0)
+        from configparser import ConfigParser
+        config = ConfigParser()
+        config.read(self.config_filename)
+        model_v_fps = config.getfloat("model", "v_fps")
+        
+        # calculate correct speed_rate based on actual video FPS
+        correct_speed_rate = float(actual_video_fps / model_v_fps)
+        
+        # CRITICAL: Update dataloader's speed_rate if it's different
+        # This ensures frame downsampling matches the actual video FPS
+        if hasattr(self.dataloader, 'video_transform') and hasattr(self.dataloader.video_transform, 'video_pipeline'):
+            # check current speed_rate by inspecting the transform
+            # if speed_rate changed, we need to recreate the transform
+            if abs(correct_speed_rate - 1.0) > 0.01:  # if significantly different from 1.0
+                print(f"[PIPELINE] Updating speed_rate from config-based to actual video-based: {correct_speed_rate:.2f} (video FPS: {actual_video_fps}, model FPS: {model_v_fps})")
+                # recreate video transform with correct speed_rate
+                from pipelines.data.transforms import VideoTransform
+                self.dataloader.video_transform = VideoTransform(speed_rate=correct_speed_rate)
+        
         landmarks = self.process_landmarks(data_filename, landmarks_filename)
         data = self.dataloader.load_data(data_filename, landmarks)
-        result = self.model.infer_with_alignment(data, video_fps=video_fps)
+        result = self.model.infer_with_alignment(data, video_fps=actual_video_fps)
         return result
