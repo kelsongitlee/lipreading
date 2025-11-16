@@ -98,13 +98,15 @@ class InferencePipeline(torch.nn.Module):
         # This prevents videos from appearing sped up when they have different FPS than expected
         import cv2
         actual_video_fps = video_fps  # use provided video_fps if available
+        total_frames = 0
         try:
             cap = cv2.VideoCapture(data_filename)
             if cap.isOpened():
                 detected_fps = cap.get(cv2.CAP_PROP_FPS)
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 if detected_fps and detected_fps > 0:
                     actual_video_fps = float(detected_fps)
-                    print(f"[PIPELINE] Detected video FPS: {actual_video_fps}")
+                    print(f"[PIPELINE] Detected video FPS: {actual_video_fps}, Total frames: {total_frames}, Duration: {total_frames/actual_video_fps:.2f}s")
                 cap.release()
         except Exception as e:
             print(f"[PIPELINE] Warning: Could not detect video FPS, using provided video_fps={video_fps}: {e}")
@@ -117,6 +119,13 @@ class InferencePipeline(torch.nn.Module):
         
         # calculate correct speed_rate based on actual video FPS
         correct_speed_rate = float(actual_video_fps / model_v_fps)
+        
+        # DEBUG: Log resampling info
+        # CRITICAL FIX: Use ceil() to ensure we don't lose frames
+        import math
+        expected_frames_after_resample = int(math.ceil(total_frames / correct_speed_rate)) if correct_speed_rate > 0 else total_frames
+        print(f"[PIPELINE] Resampling: {total_frames} frames @ {actual_video_fps} FPS → ~{expected_frames_after_resample} frames @ {model_v_fps} FPS (speed_rate={correct_speed_rate:.3f})")
+        print(f"[PIPELINE] Original duration: {total_frames/actual_video_fps:.2f}s, Expected after resample: {expected_frames_after_resample/model_v_fps:.2f}s")
         
         # CRITICAL: Update dataloader's speed_rate if it's different
         # This ensures frame downsampling matches the actual video FPS

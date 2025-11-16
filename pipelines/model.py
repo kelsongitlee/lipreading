@@ -93,7 +93,24 @@ class AVSR(torch.nn.Module):
                 enc_feats = self.model.encode(data.to(self.device))  # type: ignore
             
             # get transcription using beam search
+            # DEBUG: Log encoded features before beam search
+            enc_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
+            print(f"[MODEL] Before beam search: {enc_frame_count} encoded frames")
+            
+            # CRITICAL: Call beam search - it uses maxlenratio=0.0 by default (maxlen = enc_feats.shape[0])
+            # But end_detect can stop early, potentially missing the end!
             nbest_hyps = self.beam_search(enc_feats)
+            
+            # DEBUG: Log beam search results
+            if nbest_hyps:
+                best_hyp = nbest_hyps[0]
+                yseq_length = len(best_hyp.yseq) if hasattr(best_hyp, 'yseq') else 0
+                print(f"[MODEL] Beam search result: {len(nbest_hyps)} hypotheses, best has {yseq_length} tokens (max possible: {enc_frame_count})")
+                if yseq_length < enc_frame_count:
+                    print(f"[MODEL] WARNING: Beam search stopped early! Generated {yseq_length} tokens but had {enc_frame_count} frames available!")
+            else:
+                print(f"[MODEL] ERROR: Beam search returned no hypotheses!")
+            
             nbest_hyps = [h.asdict() for h in nbest_hyps[: min(len(nbest_hyps), 1)]]
             
             # CRITICAL FIX: Get transcription text BEFORE processing (this is the accurate output)
@@ -260,27 +277,57 @@ class AVSR(torch.nn.Module):
                         print(f"[MODEL] Transcription has {len(transcription_words)} words: {transcription_words}")
                         print(f"[MODEL] Token segments found: {len(token_segments)}, Aligned frames: {len(aligned_frames)}")
                         
-                        # Group token_ids into words based on ▁ prefix in token_list
-                        # This matches how add_results_to_json creates the transcription
+                        # CRITICAL FIX: Group token_ids into words, ensuring proper word boundaries
+                        # Match exactly how add_results_to_json creates the transcription
                         word_token_groups = []
                         current_word_token_ids = []
                         
-                        for token_id in token_ids:
+                        for idx, token_id in enumerate(token_ids):
                             if token_id < len(self.token_list):
                                 token_text = self.token_list[token_id]
-                                has_word_boundary = token_text.startswith('▁') or '▁' in token_text
+                                # CRITICAL: Check if token has word boundary prefix (▁)
+                                has_word_boundary = token_text.startswith('▁')
                                 
-                                if has_word_boundary and current_word_token_ids:
-                                    # Finish current word
-                                    word_token_groups.append(current_word_token_ids)
-                                    current_word_token_ids = [token_id]
+                                if has_word_boundary:
+                                    # Token with ▁ = start of new word
+                                    if current_word_token_ids:
+                                        # Finish previous word
+                                        word_token_groups.append(current_word_token_ids)
+                                        current_word_token_ids = [token_id]
+                                    else:
+                                        # First word or starting fresh
+                                        current_word_token_ids = [token_id]
                                 else:
-                                    # Continue current word or start new one
-                                    current_word_token_ids.append(token_id)
+                                    # Token without ▁ = continuation of current word
+                                    if not current_word_token_ids:
+                                        # Shouldn't happen (first token should have ▁), but handle it
+                                        print(f"[MODEL] WARNING: Token {idx} without word boundary: {token_text}")
+                                        current_word_token_ids = [token_id]
+                                    else:
+                                        # Continue current word
+                                        current_word_token_ids.append(token_id)
                         
-                        # Add last word
+                        # CRITICAL: Add last word if exists
                         if current_word_token_ids:
                             word_token_groups.append(current_word_token_ids)
+                        
+                        # DEBUG: Verify word grouping matches transcription
+                        if len(word_token_groups) != len(transcription_words):
+                            print(f"[MODEL] CRITICAL ERROR: Word group count ({len(word_token_groups)}) != transcription word count ({len(transcription_words)})!")
+                            print(f"[MODEL] Word groups: {len(word_token_groups)}")
+                            print(f"[MODEL] Transcription words: {len(transcription_words)}")
+                            # Try to reconstruct from tokens to see what's different
+                            reconstructed = []
+                            for group in word_token_groups:
+                                word_parts = []
+                                for tid in group:
+                                    if tid < len(self.token_list):
+                                        token_text = self.token_list[tid].replace('▁', '').strip()
+                                        word_parts.append(token_text)
+                                if word_parts:
+                                    reconstructed.append(''.join(word_parts))
+                            print(f"[MODEL] Reconstructed words from tokens: {reconstructed}")
+                            print(f"[MODEL] Transcription words: {transcription_words}")
                         
                         # DEBUG: Log word grouping
                         print(f"[MODEL] Grouped into {len(word_token_groups)} word token groups (should match {len(transcription_words)} words)")
@@ -295,10 +342,19 @@ class AVSR(torch.nn.Module):
                                 token_segments_map[token_id] = []
                             token_segments_map[token_id].append(seg)
                         
+                        # CRITICAL FIX: Map each word to its frame range, ensuring NO duplicates
+                        # Track processed words to avoid duplicates
+                        processed_word_indices = set()
+                        
                         # Map each word to its frame range from aligned_frames
                         for word_idx, word_token_ids in enumerate(word_token_groups):
                             if word_idx >= len(transcription_words):
                                 break  # Safety check
+                            
+                            # CRITICAL: Skip if we've already processed this word index (avoid duplicates)
+                            if word_idx in processed_word_indices:
+                                print(f"[MODEL] WARNING: Skipping duplicate word index {word_idx}")
+                                continue
                             
                             word_text = transcription_words[word_idx]  # Use transcription word (accurate)
                             
@@ -322,6 +378,7 @@ class AVSR(torch.nn.Module):
                                     'start': start_frame / video_fps,
                                     'end': end_frame / video_fps
                                 })
+                                processed_word_indices.add(word_idx)  # Mark as processed
                                 
                                 # DEBUG: Log first few words for debugging
                                 if word_idx < 5:
