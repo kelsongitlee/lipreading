@@ -95,29 +95,30 @@ class AVSR(torch.nn.Module):
             # get transcription using beam search
             nbest_hyps = self.beam_search(enc_feats)
             nbest_hyps = [h.asdict() for h in nbest_hyps[: min(len(nbest_hyps), 1)]]
-            transcription = add_results_to_json(nbest_hyps, self.token_list)
-            transcription = transcription.replace("▁", " ").strip()
+            
+            # CRITICAL FIX: Get transcription text BEFORE processing (this is the accurate output)
+            transcription_raw = add_results_to_json(nbest_hyps, self.token_list)
+            transcription = transcription_raw.replace("▁", " ").strip()
             transcription = transcription.replace("<eos>", "")
             
             # extract token IDs from best hypothesis for alignment
-            # CRITICAL FIX: Properly extract and clean token IDs from beam search result
+            # CRITICAL FIX: Extract token sequence matching the transcription (preserve order)
             if nbest_hyps and 'yseq' in nbest_hyps[0]:
                 yseq = nbest_hyps[0]['yseq']
                 # Convert to list if tensor
                 if isinstance(yseq, torch.Tensor):
-                    token_ids = yseq.cpu().tolist()
+                    yseq_list = yseq.cpu().tolist()
                 else:
-                    token_ids = list(yseq)
+                    yseq_list = list(yseq)
                 
-                # Remove SOS (first token, usually odim-1) and EOS (last token, odim-1)
+                # CRITICAL: parse_hypothesis skips first token (SOS), so we do the same
+                # This ensures token_ids match the transcription text
                 sos_eos_id = self.odim - 1
-                # Remove EOS tokens
-                token_ids = [t for t in token_ids if t != sos_eos_id]
-                # Remove SOS if present at start
-                if token_ids and token_ids[0] == sos_eos_id:
-                    token_ids = token_ids[1:]
-                # Remove any remaining SOS/EOS in middle (shouldn't happen, but safety check)
-                token_ids = [t for t in token_ids if t < len(self.token_list) and t >= 0]
+                # Skip SOS (first token) and remove EOS tokens, matching parse_hypothesis behavior
+                token_ids = []
+                for token_id in yseq_list[1:]:  # Skip first token (SOS) like parse_hypothesis does
+                    if token_id != sos_eos_id and token_id < len(self.token_list) and token_id >= 0:
+                        token_ids.append(token_id)
             else:
                 # fallback: convert transcription to token IDs (should not happen with proper beam search)
                 token_ids = []
@@ -173,25 +174,23 @@ class AVSR(torch.nn.Module):
                     aligned_frames = self.model.ctc.forced_align(enc_feats_for_align, token_array, blank_id=0)
                     
                     # aligned_frames is a list of token IDs, one per frame
-                    # CRITICAL FIX: Reconstruct full words from sentencepiece tokens
-                    # Sentencepiece tokens: ▁ prefix = word start, no prefix = continuation
-                    # Group tokens to form complete words
-                    if len(aligned_frames) > 0:
-                        # First pass: collect all token segments with their frame ranges
-                        # CRITICAL FIX: Properly handle all tokens including the last one
+                    # CRITICAL FIX: Use transcription text directly (accurate) and map to timestamps
+                    # Instead of reconstructing words from aligned_frames (which can have errors),
+                    # we use the transcription text (correct from beam search) and map it to token segments
+                    if len(aligned_frames) > 0 and len(token_ids) > 0:
+                        # First pass: collect token segments from aligned_frames with frame ranges
                         token_segments = []
                         current_token = aligned_frames[0]
                         start_frame = 0
                         
                         for frame_idx, token_id in enumerate(aligned_frames):
-                            # Check if token changed
                             token_changed = (token_id != current_token)
                             is_last_frame = (frame_idx == len(aligned_frames) - 1)
                             
                             if token_changed:
                                 # Token changed - finish current segment
                                 if current_token != 0 and current_token < len(self.token_list):  # skip blank tokens
-                                    end_frame = frame_idx  # current segment ends at previous frame
+                                    end_frame = frame_idx
                                     token_text = self.token_list[current_token]
                                     token_segments.append({
                                         'token_id': current_token,
@@ -204,14 +203,13 @@ class AVSR(torch.nn.Module):
                                 current_token = token_id
                                 start_frame = frame_idx
                             
-                            # Handle last frame separately to ensure we capture the final token
+                            # Handle last frame
                             if is_last_frame:
-                                # Add the final token segment (only if not blank)
                                 if current_token != 0 and current_token < len(self.token_list):  # skip blank tokens
-                                    end_frame = frame_idx + 1  # end_frame is exclusive, so +1
+                                    end_frame = frame_idx + 1
                                     token_text = self.token_list[current_token]
                                     
-                                    # Check if this token segment wasn't already added (happens if token changed on last frame)
+                                    # Check if already added
                                     already_added = False
                                     if token_segments:
                                         last_seg = token_segments[-1]
@@ -228,69 +226,99 @@ class AVSR(torch.nn.Module):
                                             'end_frame': end_frame
                                         })
                         
-                        # Second pass: group tokens into words based on ▁ prefix
-                        # CRITICAL FIX: Properly handle word boundaries for sentencepiece tokens
-                        # Tokens with ▁ prefix = word start, tokens without ▁ = continuation of previous word
-                        current_word_tokens = []
-                        current_word_start_frame = None
+                        # CRITICAL FIX: Use transcription words directly (accurate from beam search)
+                        # Map transcription words to frame ranges from aligned_frames
+                        # This preserves accuracy while getting timestamps
+                        transcription_words = [w.strip() for w in transcription.split() if w.strip()]
                         
-                        for seg in token_segments:
-                            token_text = seg['token_text']
-                            has_word_boundary = token_text.startswith('▁') or '▁' in token_text
-                            
-                            # Clean token text (remove special markers and ▁ prefix)
-                            clean_token = token_text.replace('<blank>', '').replace('<eos>', '').replace('<sos>', '').replace('▁', '').strip()
-                            
-                            # Skip empty or special tokens
-                            if not clean_token or clean_token in ['<blank>', '<eos>', '<sos>']:
-                                continue
-                            
-                            # CRITICAL FIX: If we see a word boundary marker, finish current word (if any) and start new one
-                            if has_word_boundary:
-                                # Finish current word if we have one
-                                if current_word_tokens and current_word_start_frame is not None:
-                                    full_word = ''.join([t['text'] for t in current_word_tokens])
-                                    if full_word:
-                                        start_time = current_word_start_frame / video_fps
-                                        end_time = current_word_tokens[-1]['end_frame'] / video_fps
-                                        word_timestamps.append({
-                                            'word': full_word,
-                                            'start': start_time,
-                                            'end': end_time
-                                        })
+                        # Group token_ids into words based on ▁ prefix in token_list
+                        # This matches how add_results_to_json creates the transcription
+                        word_token_groups = []
+                        current_word_token_ids = []
+                        
+                        for token_id in token_ids:
+                            if token_id < len(self.token_list):
+                                token_text = self.token_list[token_id]
+                                has_word_boundary = token_text.startswith('▁') or '▁' in token_text
                                 
-                                # Start new word (with word boundary marker)
-                                current_word_tokens = [{'text': clean_token, 'end_frame': seg['end_frame']}]
-                                current_word_start_frame = seg['start_frame']
-                            else:
-                                # No word boundary = continuation of current word
-                                if not current_word_tokens:
-                                    # This shouldn't happen (first token should have ▁), but handle it
-                                    current_word_start_frame = seg['start_frame']
-                                current_word_tokens.append({'text': clean_token, 'end_frame': seg['end_frame']})
+                                if has_word_boundary and current_word_token_ids:
+                                    # Finish current word
+                                    word_token_groups.append(current_word_token_ids)
+                                    current_word_token_ids = [token_id]
+                                else:
+                                    # Continue current word or start new one
+                                    current_word_token_ids.append(token_id)
                         
-                        # Finish last word (important: don't forget the final word!)
-                        if current_word_tokens and current_word_start_frame is not None:
-                            full_word = ''.join([t['text'] for t in current_word_tokens])
-                            if full_word:
-                                start_time = current_word_start_frame / video_fps
-                                end_time = current_word_tokens[-1]['end_frame'] / video_fps
+                        # Add last word
+                        if current_word_token_ids:
+                            word_token_groups.append(current_word_token_ids)
+                        
+                        # Create a map of token_id -> segments (for quick lookup)
+                        token_segments_map = {}
+                        for seg in token_segments:
+                            token_id = seg['token_id']
+                            if token_id not in token_segments_map:
+                                token_segments_map[token_id] = []
+                            token_segments_map[token_id].append(seg)
+                        
+                        # Map each word to its frame range from aligned_frames
+                        for word_idx, word_token_ids in enumerate(word_token_groups):
+                            if word_idx >= len(transcription_words):
+                                break  # Safety check
+                            
+                            word_text = transcription_words[word_idx]  # Use transcription word (accurate)
+                            
+                            # Find frame ranges for all tokens in this word
+                            word_start_frames = []
+                            word_end_frames = []
+                            
+                            for token_id in word_token_ids:
+                                if token_id in token_segments_map:
+                                    # Get all segments for this token
+                                    for seg in token_segments_map[token_id]:
+                                        word_start_frames.append(seg['start_frame'])
+                                        word_end_frames.append(seg['end_frame'])
+                            
+                            if word_start_frames and word_end_frames:
+                                # Use min start and max end for the word
+                                start_frame = min(word_start_frames)
+                                end_frame = max(word_end_frames)
                                 word_timestamps.append({
-                                    'word': full_word,
-                                    'start': start_time,
-                                    'end': end_time
+                                    'word': word_text,
+                                    'start': start_frame / video_fps,
+                                    'end': end_frame / video_fps
                                 })
+                            else:
+                                # Fallback: distribute evenly if no alignment found
+                                if word_timestamps:
+                                    # Continue from last word's end
+                                    last_end = word_timestamps[-1]['end']
+                                    estimated_duration = (T / video_fps) / len(transcription_words) if len(transcription_words) > 0 else 0.5
+                                    word_timestamps.append({
+                                        'word': word_text,
+                                        'start': last_end,
+                                        'end': last_end + estimated_duration
+                                    })
+                                else:
+                                    # First word
+                                    estimated_duration = (T / video_fps) / len(transcription_words) if len(transcription_words) > 0 else 0.5
+                                    word_timestamps.append({
+                                        'word': word_text,
+                                        'start': 0.0,
+                                        'end': estimated_duration
+                                    })
                         
-                        # Also populate frame_alignments for debugging
+                        # Populate frame_alignments for debugging
                         for seg in token_segments:
                             token_text = seg['token_text']
                             clean_token = token_text.replace('<blank>', '').replace('<eos>', '').replace('<sos>', '').replace('▁', '').strip()
-                            frame_alignments.append({
-                                'frame_start': seg['start_frame'],
-                                'frame_end': seg['end_frame'],
-                                'token_id': seg['token_id'],
-                                'token': clean_token
-                            })
+                            if clean_token and clean_token not in ['<blank>', '<eos>', '<sos>']:
+                                frame_alignments.append({
+                                    'frame_start': seg['start_frame'],
+                                    'frame_end': seg['end_frame'],
+                                    'token_id': seg['token_id'],
+                                    'token': clean_token
+                                })
                     else:
                         # fallback: use simple word-level distribution
                         words = transcription.split()
