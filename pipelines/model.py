@@ -83,6 +83,11 @@ class AVSR(torch.nn.Module):
                 - 'frame_alignments': list - Frame-level token alignments (for debugging)
         """
         with torch.no_grad():
+            # CRITICAL: Clear GPU cache before encoding to free up memory
+            # The encode() step is memory-intensive and may trigger OOM if cache is fragmented
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             # encode video to get features
             # NOTE: encode() returns 2D tensor (T, D) because it squeezes batch dimension
             if isinstance(data, tuple):
