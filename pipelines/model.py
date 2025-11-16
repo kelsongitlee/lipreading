@@ -125,45 +125,14 @@ class AVSR(torch.nn.Module):
             # nbest_hyps is already a list of dicts from line 108, just take first one
             nbest_hyps = nbest_hyps[:1] if isinstance(nbest_hyps, list) and len(nbest_hyps) > 0 else []
             
-            # CRITICAL FIX: Extract transcription directly from yseq to ensure accuracy
-            # parse_hypothesis/add_results_to_json joins tokens with "" and replaces <space> with " "
-            # But for SentencePiece, we need to handle ▁ prefix correctly
-            transcription = ""
-            if nbest_hyps and len(nbest_hyps) > 0:
-                first_hyp = nbest_hyps[0]
-                yseq = first_hyp.get('yseq', []) if isinstance(first_hyp, dict) else []
-                if isinstance(yseq, torch.Tensor):
-                    yseq_list = yseq.cpu().tolist()
-                else:
-                    yseq_list = list(yseq)
-                
-                # Extract tokens exactly like parse_hypothesis does (line 834-835)
-                sos_eos_id = self.odim - 1
-                token_texts = []
-                for token_id in yseq_list[1:]:  # Skip SOS (first token) like parse_hypothesis does
-                    if token_id == sos_eos_id:
-                        break  # Stop at EOS
-                    if token_id < len(self.token_list) and token_id >= 0:
-                        token_text = self.token_list[token_id]
-                        token_texts.append(token_text)
-                
-                # CRITICAL: Join tokens exactly like parse_hypothesis (line 841)
-                # parse_hypothesis does: text = "".join(token_as_list).replace("<space>", " ")
-                # For SentencePiece, ▁ indicates word boundary, so replace ▁ with space
-                transcription = ''.join(token_texts)
-                # Handle SentencePiece: ▁ prefix means word boundary (space)
-                # Replace ▁ with space (except keep it if it's the entire token)
-                transcription = transcription.replace('▁', ' ').replace('<space>', ' ')
-                # Normalize multiple spaces to single space
-                transcription = re.sub(r'\s+', ' ', transcription).strip()
-                # Remove special tokens
-                transcription = transcription.replace('<eos>', '').replace('<sos>', '').replace('<blank>', '').strip()
-            else:
-                # Fallback to add_results_to_json if yseq extraction fails
-                transcription_raw = add_results_to_json(nbest_hyps, self.token_list) if nbest_hyps else ""
-                transcription = transcription_raw.replace("▁", " ").replace("<space>", " ").strip()
-                transcription = transcription.replace("<eos>", "").replace("<sos>", "").replace("<blank>", "").strip()
-                transcription = re.sub(r'\s+', ' ', transcription).strip()
+            # CRITICAL FIX: Use EXACT SAME transcription extraction as infer() method (line 67-69)
+            # This ensures consistency - infer() works correctly, so infer_with_alignment should use same logic
+            # infer() uses: transcription_raw = add_results_to_json(nbest_hyps, self.token_list)
+            # Then: transcription = transcription_raw.replace("▁", " ").strip()
+            # This is the proven, working method from the original implementation
+            transcription_raw = add_results_to_json(nbest_hyps, self.token_list)
+            transcription = transcription_raw.replace("▁", " ").strip()
+            transcription = transcription.replace("<eos>", "")
             
             # DEBUG: Log transcription and video info for debugging accuracy issues
             encoded_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
