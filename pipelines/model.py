@@ -64,10 +64,41 @@ class AVSR(torch.nn.Module):
             else:
                 # video-only mode - encode takes only x (no aux_x parameter)
                 enc_feats = self.model.encode(data.to(self.device))  # type: ignore
-            nbest_hyps = self.beam_search(enc_feats)
+            
+            # CRITICAL FIX: For long videos, set maxlenratio to prevent infinite loops
+            # For videos longer than 30 seconds (~750 frames @ 25fps), limit output length
+            # maxlenratio=2.0 means max output tokens = 2x input frames (reasonable for speech)
+            # For very long videos, set absolute max to prevent "nominee nominee nominee..." loops
+            input_length = enc_feats.shape[0] if len(enc_feats.shape) > 1 else len(enc_feats)
+            if input_length > 750:  # ~30 seconds @ 25fps
+                # For long videos: use absolute max length (500 tokens) to prevent loops
+                maxlenratio = -500.0  # negative means absolute max length
+                print(f"[MODEL] Long video detected ({input_length} frames), using maxlenratio={maxlenratio} to prevent loops")
+            else:
+                # For normal videos: use 2x input length (reasonable for speech)
+                maxlenratio = 2.0
+            
+            # Call beam_search with maxlenratio parameter to prevent infinite loops
+            # PyTorch modules' __call__ forwards to forward() which accepts maxlenratio
+            nbest_hyps = self.beam_search(enc_feats, maxlenratio=maxlenratio)
             nbest_hyps = [h.asdict() for h in nbest_hyps[: min(len(nbest_hyps), 1)]]
             transcription = add_results_to_json(nbest_hyps, self.token_list)
             transcription = transcription.replace("▁", " ").strip()
+            
+            # CRITICAL FIX: Detect and remove repeated sequences in transcription
+            # Check if transcription has excessive repetition (possible beam search loop)
+            transcription_words = transcription.split()
+            if len(transcription_words) > 20:
+                # Check for repeated 3-word sequences
+                for i in range(len(transcription_words) - 6):
+                    phrase1 = ' '.join(transcription_words[i:i+3])
+                    phrase2 = ' '.join(transcription_words[i+3:i+6])
+                    if phrase1 == phrase2:
+                        # Detected repetition - truncate at first repetition
+                        print(f"[MODEL] WARNING: Detected repeated text pattern in transcription, truncating at first repetition")
+                        transcription = ' '.join(transcription_words[:i+3])
+                        break
+        
         return transcription.replace("<eos>", "")
     
     def get_word_timestamps_from_transcription(self, transcription, data, video_fps=25.0):
