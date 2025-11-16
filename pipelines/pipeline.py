@@ -80,6 +80,32 @@ class InferencePipeline(torch.nn.Module):
         transcript = self.model.infer(data)
         return transcript
     
+    def forward_with_accurate_alignment(self, data_filename, landmarks_filename=None, video_fps=25.0):
+        """
+        Process video using EXACT same preprocessing as forward() (infer()) for 100% accuracy.
+        Then get word timestamps separately using the accurate transcription.
+        
+        This ensures transcription is 100% identical to forward() -> infer().
+        """
+        assert os.path.isfile(data_filename), f"data_filename: {data_filename} does not exist."
+        
+        # CRITICAL: Use EXACT same preprocessing as forward() method
+        # DO NOT modify speed_rate or any preprocessing - use exactly what forward() uses
+        landmarks = self.process_landmarks(data_filename, landmarks_filename)
+        data = self.dataloader.load_data(data_filename, landmarks)
+        
+        # Get accurate transcription using infer() (same as forward())
+        transcription = self.model.infer(data)
+        
+        # Now get word timestamps using the accurate transcription
+        alignment_result = self.model.get_word_timestamps_from_transcription(transcription, data, video_fps)
+        
+        return {
+            'transcription': transcription,  # 100% accurate (from infer())
+            'word_timestamps': alignment_result.get('word_timestamps', []),
+            'frame_alignments': alignment_result.get('frame_alignments', [])
+        }
+    
     def forward_with_alignment(self, data_filename, landmarks_filename=None, video_fps=25.0):
         """
         Process video with CTC forced alignment for subtitle generation

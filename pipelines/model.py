@@ -70,6 +70,134 @@ class AVSR(torch.nn.Module):
             transcription = transcription.replace("▁", " ").strip()
         return transcription.replace("<eos>", "")
     
+    def get_word_timestamps_from_transcription(self, transcription, data, video_fps=25.0):
+        """
+        Get word timestamps using the EXACT transcription from infer() method.
+        This ensures 100% accuracy - we use the transcription from infer(), then do alignment.
+        
+        Args:
+            transcription: The accurate transcription from infer() method
+            data: Input video data (tensor or tuple) - same data used for infer()
+            video_fps: Video frame rate (default: 25.0 fps)
+            
+        Returns:
+            dict with 'word_timestamps' and 'frame_alignments' keys
+        """
+        with torch.no_grad():
+            # encode video to get features (same encoding as infer())
+            if isinstance(data, tuple):
+                enc_feats = self.model.encode(data[0].to(self.device), data[1].to(self.device))  # type: ignore
+            else:
+                enc_feats = self.model.encode(data.to(self.device))  # type: ignore
+            
+            # extract token IDs from the transcription text (reverse lookup)
+            # this matches the transcription words to token IDs
+            transcription_words = [w.strip() for w in transcription.split() if w.strip()]
+            token_ids = []
+            
+            # build token sequence from transcription by finding tokens in token_list
+            # we need to match how add_results_to_json creates the transcription
+            transcription_with_spaces = transcription.replace("▁", " ▁")
+            for word in transcription_words:
+                # try to find word tokens (with ▁ prefix for sentencepiece)
+                word_with_prefix = f"▁{word.upper()}"
+                if word_with_prefix in self.token_list:
+                    token_ids.append(self.token_list.index(word_with_prefix))
+                else:
+                    # try uppercase
+                    if word.upper() in self.token_list:
+                        token_ids.append(self.token_list.index(word.upper()))
+                    else:
+                        # try lowercase
+                        if word.lower() in self.token_list:
+                            token_ids.append(self.token_list.index(word.lower()))
+                        else:
+                            # word might be split into subword tokens
+                            # try to find partial matches
+                            found = False
+                            for token_idx, token_text in enumerate(self.token_list):
+                                token_clean = token_text.replace("▁", "").strip()
+                                if token_clean.upper() == word.upper():
+                                    token_ids.append(token_idx)
+                                    found = True
+                                    break
+            
+            # perform CTC forced alignment using the token IDs
+            word_timestamps = []
+            frame_alignments = []
+            
+            if hasattr(self.model, 'ctc') and self.model.ctc is not None and len(token_ids) > 0:
+                try:
+                    # prepare enc_feats for alignment (handle 2D or 3D)
+                    if len(enc_feats.shape) == 3:
+                        if enc_feats.shape[0] == 1:
+                            T = enc_feats.shape[1]
+                            enc_feats_for_align = enc_feats
+                        else:
+                            T = enc_feats.shape[1]
+                            enc_feats_for_align = enc_feats[0:1]
+                    elif len(enc_feats.shape) == 2:
+                        T = enc_feats.shape[0]
+                        enc_feats_for_align = enc_feats
+                    else:
+                        raise ValueError(f"Unexpected enc_feats shape: {enc_feats.shape}")
+                    
+                    # convert token_ids to numpy array
+                    token_array = np.array(token_ids, dtype=np.int64)
+                    
+                    # perform CTC forced alignment
+                    aligned_frames = self.model.ctc.forced_align(enc_feats_for_align, token_array, blank_id=0)
+                    
+                    # map aligned frames to word timestamps
+                    if len(aligned_frames) > 0 and len(transcription_words) > 0:
+                        # simple approach: distribute words evenly across aligned frames
+                        # or map based on token segments
+                        frame_duration = 1.0 / video_fps
+                        words_per_token_ratio = len(transcription_words) / len(token_ids) if len(token_ids) > 0 else 1.0
+                        
+                        for word_idx, word in enumerate(transcription_words):
+                            # calculate approximate time range for this word
+                            token_start_idx = int(word_idx / words_per_token_ratio)
+                            token_end_idx = int((word_idx + 1) / words_per_token_ratio)
+                            token_end_idx = min(token_end_idx, len(token_ids) - 1)
+                            
+                            # find frame ranges for these tokens in aligned_frames
+                            start_frame = T
+                            end_frame = 0
+                            for frame_idx, frame_token in enumerate(aligned_frames):
+                                if frame_idx < len(aligned_frames) and frame_token in token_ids[token_start_idx:token_end_idx+1]:
+                                    start_frame = min(start_frame, frame_idx)
+                                    end_frame = max(end_frame, frame_idx)
+                            
+                            if start_frame < T and end_frame >= 0:
+                                start_time = start_frame * frame_duration
+                                end_time = (end_frame + 1) * frame_duration
+                                word_timestamps.append({
+                                    'word': word,
+                                    'start': start_time,
+                                    'end': end_time
+                                })
+                            
+                        frame_alignments = [{'frame': i, 'token_id': token} for i, token in enumerate(aligned_frames)]
+                    
+                except Exception as align_error:
+                    print(f"[MODEL] WARNING: CTC alignment failed: {align_error}, using fallback timestamps")
+                    # fallback: evenly distribute words across video duration
+                    video_duration = T / video_fps if T > 0 else 0
+                    if video_duration > 0 and len(transcription_words) > 0:
+                        time_per_word = video_duration / len(transcription_words)
+                        for word_idx, word in enumerate(transcription_words):
+                            word_timestamps.append({
+                                'word': word,
+                                'start': word_idx * time_per_word,
+                                'end': (word_idx + 1) * time_per_word
+                            })
+            
+            return {
+                'word_timestamps': word_timestamps,
+                'frame_alignments': frame_alignments
+            }
+    
     def infer_with_alignment(self, data, video_fps=25.0):
         """
         Infer transcription with CTC forced alignment for subtitle generation
