@@ -97,21 +97,30 @@ class AVSR(torch.nn.Module):
             enc_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
             print(f"[MODEL] Before beam search: {enc_frame_count} encoded frames")
             
-            # CRITICAL: Call beam search - it uses maxlenratio=0.0 by default (maxlen = enc_feats.shape[0])
-            # But end_detect can stop early, potentially missing the end!
-            nbest_hyps = self.beam_search(enc_feats)
+            # CRITICAL FIX: Disable early stopping by using maxlenratio=1.0 instead of 0.0
+            # maxlenratio=0.0 enables end_detect() which stops early (missing last 2+ seconds!)
+            # maxlenratio=1.0 sets maxlen=enc_feats.shape[0] AND disables end_detect() early stopping
+            # This ensures ALL frames are processed for complete transcription
+            # CRITICAL: Call beam search with maxlenratio=1.0 to force processing ALL frames
+            # BatchBeamSearch.__call__() calls forward(), so we can override by calling forward() directly
+            nbest_hyps = self.beam_search.forward(enc_feats, maxlenratio=1.0, minlenratio=0.0)
+            # forward() returns List[Hypothesis], convert to list of dicts for consistency
+            nbest_hyps = [h.asdict() if hasattr(h, 'asdict') else h for h in nbest_hyps] if nbest_hyps else []
             
             # DEBUG: Log beam search results
             if nbest_hyps:
-                best_hyp = nbest_hyps[0]
-                yseq_length = len(best_hyp.yseq) if hasattr(best_hyp, 'yseq') else 0
-                print(f"[MODEL] Beam search result: {len(nbest_hyps)} hypotheses, best has {yseq_length} tokens (max possible: {enc_frame_count})")
+                best_hyp = nbest_hyps[0] if isinstance(nbest_hyps, list) else nbest_hyps
+                # best_hyp is already a dict (from asdict conversion above)
+                yseq = best_hyp.get('yseq', []) if isinstance(best_hyp, dict) else []
+                yseq_length = len(yseq) if yseq else 0
+                print(f"[MODEL] Beam search result: {len(nbest_hyps) if isinstance(nbest_hyps, list) else 1} hypotheses, best has {yseq_length} tokens (max possible: {enc_frame_count})")
                 if yseq_length < enc_frame_count:
                     print(f"[MODEL] WARNING: Beam search stopped early! Generated {yseq_length} tokens but had {enc_frame_count} frames available!")
             else:
                 print(f"[MODEL] ERROR: Beam search returned no hypotheses!")
             
-            nbest_hyps = [h.asdict() for h in nbest_hyps[: min(len(nbest_hyps), 1)]]
+            # nbest_hyps is already a list of dicts from line 108, just take first one
+            nbest_hyps = nbest_hyps[:1] if isinstance(nbest_hyps, list) and len(nbest_hyps) > 0 else []
             
             # CRITICAL FIX: Get transcription text BEFORE processing (this is the accurate output)
             transcription_raw = add_results_to_json(nbest_hyps, self.token_list)
@@ -134,8 +143,9 @@ class AVSR(torch.nn.Module):
             
             # extract token IDs from best hypothesis for alignment
             # CRITICAL FIX: Extract token sequence matching the transcription (preserve order)
-            if nbest_hyps and 'yseq' in nbest_hyps[0]:
-                yseq = nbest_hyps[0]['yseq']
+            if nbest_hyps and len(nbest_hyps) > 0:
+                first_hyp = nbest_hyps[0]
+                yseq = first_hyp.get('yseq', []) if isinstance(first_hyp, dict) else []
                 # Convert to list if tensor
                 if isinstance(yseq, torch.Tensor):
                     yseq_list = yseq.cpu().tolist()
@@ -342,19 +352,12 @@ class AVSR(torch.nn.Module):
                                 token_segments_map[token_id] = []
                             token_segments_map[token_id].append(seg)
                         
-                        # CRITICAL FIX: Map each word to its frame range, ensuring NO duplicates
-                        # Track processed words to avoid duplicates
-                        processed_word_indices = set()
-                        
                         # Map each word to its frame range from aligned_frames
+                        # NOTE: Duplicate words are ALLOWED - video may legitimately say the same word multiple times
+                        # e.g., "SAY WITH ME IRRITATE IRRITATE" - both "IRRITATE" should be included
                         for word_idx, word_token_ids in enumerate(word_token_groups):
                             if word_idx >= len(transcription_words):
                                 break  # Safety check
-                            
-                            # CRITICAL: Skip if we've already processed this word index (avoid duplicates)
-                            if word_idx in processed_word_indices:
-                                print(f"[MODEL] WARNING: Skipping duplicate word index {word_idx}")
-                                continue
                             
                             word_text = transcription_words[word_idx]  # Use transcription word (accurate)
                             
@@ -378,7 +381,7 @@ class AVSR(torch.nn.Module):
                                     'start': start_frame / video_fps,
                                     'end': end_frame / video_fps
                                 })
-                                processed_word_indices.add(word_idx)  # Mark as processed
+                                # Already tracked in processed_words above
                                 
                                 # DEBUG: Log first few words for debugging
                                 if word_idx < 5:
