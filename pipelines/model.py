@@ -50,9 +50,10 @@ class AVSR(torch.nn.Module):
         self.model.load_state_dict(torch.load(model_path, map_location=lambda storage, loc: storage))
         self.model.to(device=self.device).eval()
 
-        # convert penalty to int for type compatibility (though float works at runtime)
-        penalty_int = int(penalty) if penalty is not None else 0
-        self.beam_search = get_beam_search_decoder(self.model, self.token_list, rnnlm, rnnlm_conf, penalty_int, ctc_weight, lm_weight, beam_size)
+        # CRITICAL FIX: penalty should be float (0.5), not int (converting 0.5 to int gives 0!)
+        # get_beam_search_decoder accepts float for penalty (length_bonus is a float weight)
+        penalty_float = float(penalty) if penalty is not None else 0.0
+        self.beam_search = get_beam_search_decoder(self.model, self.token_list, rnnlm, rnnlm_conf, penalty_float, ctc_weight, lm_weight, beam_size)
         self.beam_search.to(device=self.device).eval()
         
     def infer(self, data):
