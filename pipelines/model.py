@@ -99,29 +99,10 @@ class AVSR(torch.nn.Module):
                 # video-only mode - encode takes only x (no aux_x parameter)
                 enc_feats = self.model.encode(data.to(self.device))  # type: ignore
             
-            # get transcription using beam search
-            # DEBUG: Log encoded features before beam search
-            enc_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
-            print(f"[MODEL] Before beam search: {enc_frame_count} encoded frames")
-            
-            # Original approach: Use default beam search call (maxlenratio=0.0)
-            # This uses early stopping via end_detect() which is more memory-efficient
-            # For video upload with high accuracy, the model should still complete transcription
+            # get transcription using beam search (same as infer() method)
             nbest_hyps = self.beam_search(enc_feats)
             # forward() returns List[Hypothesis], convert to list of dicts for consistency
             nbest_hyps = [h.asdict() if hasattr(h, 'asdict') else h for h in nbest_hyps] if nbest_hyps else []
-            
-            # DEBUG: Log beam search results
-            if nbest_hyps:
-                best_hyp = nbest_hyps[0] if isinstance(nbest_hyps, list) else nbest_hyps
-                # best_hyp is already a dict (from asdict conversion above)
-                yseq = best_hyp.get('yseq', []) if isinstance(best_hyp, dict) else []
-                yseq_length = len(yseq) if yseq else 0
-                print(f"[MODEL] Beam search result: {len(nbest_hyps) if isinstance(nbest_hyps, list) else 1} hypotheses, best has {yseq_length} tokens (max possible: {enc_frame_count})")
-                if yseq_length < enc_frame_count:
-                    print(f"[MODEL] WARNING: Beam search stopped early! Generated {yseq_length} tokens but had {enc_frame_count} frames available!")
-            else:
-                print(f"[MODEL] ERROR: Beam search returned no hypotheses!")
             
             # nbest_hyps is already a list of dicts from line 108, just take first one
             nbest_hyps = nbest_hyps[:1] if isinstance(nbest_hyps, list) and len(nbest_hyps) > 0 else []
@@ -134,20 +115,6 @@ class AVSR(torch.nn.Module):
             transcription_raw = add_results_to_json(nbest_hyps, self.token_list)
             transcription = transcription_raw.replace("▁", " ").strip()
             transcription = transcription.replace("<eos>", "")
-            
-            # DEBUG: Log transcription and video info for debugging accuracy issues
-            encoded_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
-            video_duration_seconds = encoded_frame_count / video_fps if video_fps > 0 else 0
-            print(f"=" * 80)
-            print(f"[MODEL] ===== TRANSCRIPTION DETAILED DEBUG =====")
-            print(f"[MODEL] Video FPS: {video_fps}")
-            print(f"[MODEL] Encoded frames: {encoded_frame_count}")
-            print(f"[MODEL] Video duration: {video_duration_seconds:.2f} seconds")
-            print(f"[MODEL] Transcription from beam search: {transcription}")
-            print(f"[MODEL] Beam search parameters:")
-            print(f"[MODEL]   - beam_size: {getattr(self.beam_search, 'beam_size', 'unknown')}")
-            print(f"[MODEL]   - lm_weight: {getattr(self.beam_search, 'weights', {}).get('lm', 'unknown')}")
-            print(f"=" * 80)
             
             # extract token IDs from best hypothesis for alignment
             # CRITICAL FIX: Extract token sequence matching the transcription (preserve order)
