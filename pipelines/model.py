@@ -502,6 +502,17 @@ class AVSR(torch.nn.Module):
                             'end': (i + 1) * time_per_word
                         })
             
+            # CRITICAL: Free GPU memory before returning
+            # Move intermediate tensors to CPU and delete them
+            if torch.cuda.is_available():
+                # Delete large tensors that are no longer needed
+                if 'enc_feats' in locals():
+                    del enc_feats
+                if 'aligned_frames' in locals():
+                    del aligned_frames
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            
             return {
                 'transcription': transcription,
                 'word_timestamps': word_timestamps,
