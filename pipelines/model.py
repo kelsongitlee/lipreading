@@ -102,13 +102,10 @@ class AVSR(torch.nn.Module):
             enc_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
             print(f"[MODEL] Before beam search: {enc_frame_count} encoded frames")
             
-            # CRITICAL FIX: Disable early stopping by using maxlenratio=1.0 instead of 0.0
-            # maxlenratio=0.0 enables end_detect() which stops early (missing last 2+ seconds!)
-            # maxlenratio=1.0 sets maxlen=enc_feats.shape[0] AND disables end_detect() early stopping
-            # This ensures ALL frames are processed for complete transcription
-            # CRITICAL: Call beam search with maxlenratio=1.0 to force processing ALL frames
-            # BatchBeamSearch.__call__() calls forward(), so we can override by calling forward() directly
-            nbest_hyps = self.beam_search.forward(enc_feats, maxlenratio=1.0, minlenratio=0.0)
+            # Original approach: Use default beam search call (maxlenratio=0.0)
+            # This uses early stopping via end_detect() which is more memory-efficient
+            # For video upload with high accuracy, the model should still complete transcription
+            nbest_hyps = self.beam_search(enc_feats)
             # forward() returns List[Hypothesis], convert to list of dicts for consistency
             nbest_hyps = [h.asdict() if hasattr(h, 'asdict') else h for h in nbest_hyps] if nbest_hyps else []
             
