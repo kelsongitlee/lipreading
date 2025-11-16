@@ -101,6 +101,10 @@ class AVSR(torch.nn.Module):
             transcription = transcription_raw.replace("▁", " ").strip()
             transcription = transcription.replace("<eos>", "")
             
+            # DEBUG: Log transcription and video info for debugging accuracy issues
+            print(f"[MODEL] Transcription from beam search: {transcription}")
+            print(f"[MODEL] Video FPS: {video_fps}, Encoded frames: {enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 'unknown'}")
+            
             # extract token IDs from best hypothesis for alignment
             # CRITICAL FIX: Extract token sequence matching the transcription (preserve order)
             if nbest_hyps and 'yseq' in nbest_hyps[0]:
@@ -119,6 +123,13 @@ class AVSR(torch.nn.Module):
                 for token_id in yseq_list[1:]:  # Skip first token (SOS) like parse_hypothesis does
                     if token_id != sos_eos_id and token_id < len(self.token_list) and token_id >= 0:
                         token_ids.append(token_id)
+                
+                # DEBUG: Log token extraction for debugging
+                if len(token_ids) > 0:
+                    token_texts = [self.token_list[tid] if tid < len(self.token_list) else f'<INVALID:{tid}>' for tid in token_ids[:10]]
+                    print(f"[MODEL] Extracted {len(token_ids)} tokens, first 10: {token_texts}")
+                else:
+                    print(f"[MODEL] WARNING: No valid tokens extracted from yseq!")
             else:
                 # fallback: convert transcription to token IDs (should not happen with proper beam search)
                 token_ids = []
@@ -172,6 +183,10 @@ class AVSR(torch.nn.Module):
                     # perform CTC forced alignment
                     # forced_align will handle the batch dimension internally
                     aligned_frames = self.model.ctc.forced_align(enc_feats_for_align, token_array, blank_id=0)
+                    
+                    # DEBUG: Log alignment info
+                    print(f"[MODEL] CTC alignment complete: {len(aligned_frames)} frames aligned, {len(token_ids)} tokens in sequence")
+                    print(f"[MODEL] Encoded features shape: {enc_feats_for_align.shape}, Expected frames: {T}")
                     
                     # aligned_frames is a list of token IDs, one per frame
                     # CRITICAL FIX: Use transcription text directly (accurate) and map to timestamps
@@ -231,6 +246,10 @@ class AVSR(torch.nn.Module):
                         # This preserves accuracy while getting timestamps
                         transcription_words = [w.strip() for w in transcription.split() if w.strip()]
                         
+                        # DEBUG: Log word counts for debugging
+                        print(f"[MODEL] Transcription has {len(transcription_words)} words: {transcription_words}")
+                        print(f"[MODEL] Token segments found: {len(token_segments)}, Aligned frames: {len(aligned_frames)}")
+                        
                         # Group token_ids into words based on ▁ prefix in token_list
                         # This matches how add_results_to_json creates the transcription
                         word_token_groups = []
@@ -252,6 +271,11 @@ class AVSR(torch.nn.Module):
                         # Add last word
                         if current_word_token_ids:
                             word_token_groups.append(current_word_token_ids)
+                        
+                        # DEBUG: Log word grouping
+                        print(f"[MODEL] Grouped into {len(word_token_groups)} word token groups (should match {len(transcription_words)} words)")
+                        if len(word_token_groups) != len(transcription_words):
+                            print(f"[MODEL] WARNING: Word count mismatch! Groups: {len(word_token_groups)}, Words: {len(transcription_words)}")
                         
                         # Create a map of token_id -> segments (for quick lookup)
                         token_segments_map = {}
@@ -288,6 +312,10 @@ class AVSR(torch.nn.Module):
                                     'start': start_frame / video_fps,
                                     'end': end_frame / video_fps
                                 })
+                                
+                                # DEBUG: Log first few words for debugging
+                                if word_idx < 5:
+                                    print(f"[MODEL] Word {word_idx+1}/{len(transcription_words)}: '{word_text}' → frames {start_frame}-{end_frame} ({start_frame/video_fps:.2f}s-{end_frame/video_fps:.2f}s)")
                             else:
                                 # Fallback: distribute evenly if no alignment found
                                 if word_timestamps:
@@ -307,6 +335,13 @@ class AVSR(torch.nn.Module):
                                         'start': 0.0,
                                         'end': estimated_duration
                                     })
+                        
+                        # DEBUG: Log final word timestamps summary
+                        print(f"[MODEL] Created {len(word_timestamps)} word timestamps from {len(transcription_words)} transcription words")
+                        if len(word_timestamps) < len(transcription_words):
+                            missing = len(transcription_words) - len(word_timestamps)
+                            print(f"[MODEL] WARNING: {missing} words missing timestamps! Last word timestamps: {word_timestamps[-3:] if len(word_timestamps) >= 3 else word_timestamps}")
+                            print(f"[MODEL] Missing words: {transcription_words[len(word_timestamps):]}")
                         
                         # Populate frame_alignments for debugging
                         for seg in token_segments:
