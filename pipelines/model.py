@@ -99,18 +99,19 @@ class AVSR(torch.nn.Module):
                 # video-only mode - encode takes only x (no aux_x parameter)
                 enc_feats = self.model.encode(data.to(self.device))  # type: ignore
             
-            # get transcription using beam search (same as infer() method)
+            # CRITICAL: Use EXACT SAME beam search and transcription extraction as infer() method
+            # This ensures 100% accuracy - we're using the exact same code path as infer()
+            # infer() lines 67-71:
+            #   nbest_hyps = self.beam_search(enc_feats)
+            #   nbest_hyps = [h.asdict() for h in nbest_hyps[: min(len(nbest_hyps), 1)]]
+            #   transcription = add_results_to_json(nbest_hyps, self.token_list)
+            #   transcription = transcription.replace("▁", " ").strip()
+            #   return transcription.replace("<eos>", "")
             nbest_hyps = self.beam_search(enc_feats)
-            # forward() returns List[Hypothesis], convert to list of dicts for consistency
-            nbest_hyps = [h.asdict() if hasattr(h, 'asdict') else h for h in nbest_hyps] if nbest_hyps else []
+            # EXACT same conversion as infer() line 68 - take only first hypothesis
+            nbest_hyps = [h.asdict() for h in nbest_hyps[: min(len(nbest_hyps), 1)]]
             
-            # nbest_hyps is already a list of dicts from line 108, just take first one
-            nbest_hyps = nbest_hyps[:1] if isinstance(nbest_hyps, list) and len(nbest_hyps) > 0 else []
-            
-            # CRITICAL FIX: Use EXACT SAME transcription extraction as infer() method (line 67-69)
-            # This ensures consistency - infer() works correctly, so infer_with_alignment should use same logic
-            # infer() uses: transcription_raw = add_results_to_json(nbest_hyps, self.token_list)
-            # Then: transcription = transcription_raw.replace("▁", " ").strip()
+            # EXACT same transcription extraction as infer() method (lines 69-71)
             # This is the proven, working method from the original implementation
             transcription_raw = add_results_to_json(nbest_hyps, self.token_list)
             transcription = transcription_raw.replace("▁", " ").strip()
@@ -390,6 +391,10 @@ class AVSR(torch.nn.Module):
                             print(f"[MODEL] WARNING: {missing} words missing timestamps! Last word timestamps: {word_timestamps[-3:] if len(word_timestamps) >= 3 else word_timestamps}")
                             print(f"[MODEL] Missing words: {transcription_words[len(word_timestamps):]}")
                         
+                        # Calculate video duration from encoded frames
+                        encoded_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
+                        video_duration_seconds = encoded_frame_count / video_fps if video_fps > 0 else 0
+                        
                         # DEBUG: Detailed time-based word detection for full video duration
                         print(f"[MODEL] ===== TIME-BASED WORD DETECTION (FULL DURATION) =====")
                         print(f"[MODEL] Video duration: {video_duration_seconds:.2f} seconds")
@@ -495,7 +500,7 @@ class AVSR(torch.nn.Module):
             }
 
 
-def get_beam_search_decoder(model, token_list, rnnlm=None, rnnlm_conf=None, penalty=0, ctc_weight=0.1, lm_weight=0., beam_size=40):
+def get_beam_search_decoder(model, token_list, rnnlm=None, rnnlm_conf=None, penalty=0.0, ctc_weight=0.1, lm_weight=0., beam_size=40):
     sos = model.odim - 1
     eos = model.odim - 1
     scorers = model.scorers()
