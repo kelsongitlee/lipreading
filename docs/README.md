@@ -16,6 +16,7 @@
 ### Implementation Details
 8. [Parameters](08_Parameters.md) - Key parameters and their impact
 9. [File Structure](09_FileStructure.md) - Folder and file purposes
+10. [Parallel Computing](10_ParallelComputing.md) - Parallel computing analysis and limitations
 
 ---
 
