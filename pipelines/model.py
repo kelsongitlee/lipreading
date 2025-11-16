@@ -102,8 +102,18 @@ class AVSR(torch.nn.Module):
             transcription = transcription.replace("<eos>", "")
             
             # DEBUG: Log transcription and video info for debugging accuracy issues
+            encoded_frame_count = enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 0
+            video_duration_seconds = encoded_frame_count / video_fps if video_fps > 0 else 0
+            print(f"=" * 80)
+            print(f"[MODEL] ===== TRANSCRIPTION DETAILED DEBUG =====")
+            print(f"[MODEL] Video FPS: {video_fps}")
+            print(f"[MODEL] Encoded frames: {encoded_frame_count}")
+            print(f"[MODEL] Video duration: {video_duration_seconds:.2f} seconds")
             print(f"[MODEL] Transcription from beam search: {transcription}")
-            print(f"[MODEL] Video FPS: {video_fps}, Encoded frames: {enc_feats.shape[0] if hasattr(enc_feats, 'shape') else 'unknown'}")
+            print(f"[MODEL] Beam search parameters:")
+            print(f"[MODEL]   - beam_size: {getattr(self.beam_search, 'beam_size', 'unknown')}")
+            print(f"[MODEL]   - lm_weight: {getattr(self.beam_search, 'weights', {}).get('lm', 'unknown')}")
+            print(f"=" * 80)
             
             # extract token IDs from best hypothesis for alignment
             # CRITICAL FIX: Extract token sequence matching the transcription (preserve order)
@@ -337,11 +347,49 @@ class AVSR(torch.nn.Module):
                                     })
                         
                         # DEBUG: Log final word timestamps summary
+                        print(f"=" * 80)
+                        print(f"[MODEL] ===== WORD TIMESTAMPS SUMMARY =====")
                         print(f"[MODEL] Created {len(word_timestamps)} word timestamps from {len(transcription_words)} transcription words")
                         if len(word_timestamps) < len(transcription_words):
                             missing = len(transcription_words) - len(word_timestamps)
                             print(f"[MODEL] WARNING: {missing} words missing timestamps! Last word timestamps: {word_timestamps[-3:] if len(word_timestamps) >= 3 else word_timestamps}")
                             print(f"[MODEL] Missing words: {transcription_words[len(word_timestamps):]}")
+                        
+                        # DEBUG: Detailed time-based word detection for full video duration
+                        print(f"[MODEL] ===== TIME-BASED WORD DETECTION (FULL DURATION) =====")
+                        print(f"[MODEL] Video duration: {video_duration_seconds:.2f} seconds")
+                        print(f"[MODEL] Word-by-word breakdown:")
+                        for i, ws in enumerate(word_timestamps):
+                            word = ws.get('word', '')
+                            start = ws.get('start', 0.0)
+                            end = ws.get('end', 0.0)
+                            duration = end - start
+                            # Create visual timeline
+                            timeline_pos = int((start / video_duration_seconds) * 50) if video_duration_seconds > 0 else 0
+                            timeline = ' ' * timeline_pos + '█' * max(1, int((duration / video_duration_seconds) * 50)) if video_duration_seconds > 0 else ''
+                            print(f"[MODEL]   [{i+1:3d}] {start:6.2f}s - {end:6.2f}s ({duration:5.2f}s) | {word:20s} | {timeline}")
+                        
+                        # Create second-by-second breakdown
+                        print(f"[MODEL] ===== SECOND-BY-SECOND BREAKDOWN =====")
+                        for second in range(int(video_duration_seconds) + 1):
+                            words_in_second = []
+                            for ws in word_timestamps:
+                                word_start = ws.get('start', 0.0)
+                                word_end = ws.get('end', 0.0)
+                                # Check if word overlaps with this second
+                                if word_start < second + 1 and word_end > second:
+                                    overlap_start = max(word_start, second)
+                                    overlap_end = min(word_end, second + 1)
+                                    overlap_duration = overlap_end - overlap_start
+                                    words_in_second.append((ws.get('word', ''), overlap_start, overlap_end, overlap_duration))
+                            
+                            if words_in_second:
+                                words_str = ', '.join([f"{w} ({s:.2f}s-{e:.2f}s)" for w, s, e, d in words_in_second])
+                                print(f"[MODEL]   [{second:3d}s - {second+1:3d}s]: {words_str}")
+                            else:
+                                print(f"[MODEL]   [{second:3d}s - {second+1:3d}s]: (no words detected)")
+                        
+                        print(f"=" * 80)
                         
                         # Populate frame_alignments for debugging
                         for seg in token_segments:
