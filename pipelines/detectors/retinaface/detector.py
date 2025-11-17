@@ -35,4 +35,18 @@ class LandmarksDetector:
                     if bbox_size > max_size:
                         max_id, max_size = idx, bbox_size
                 landmarks.append(face_points[max_id])
+        
+        # CRITICAL FIX: Make detection more lenient for real-time processing (same as MediaPipe)
+        # Allow some frames to fail (especially for short videos or fast speech)
+        # Only fail if ALL frames failed AND we have enough frames (likely a real issue)
+        detected_count = sum(1 for l in landmarks if l is not None)
+        total_frames = len(landmarks)
+        if detected_count == 0 and total_frames >= 30:
+            # All frames failed and we have enough frames - likely a real issue
+            raise AssertionError("Cannot detect any frames in the video")
+        elif detected_count == 0 and total_frames < 30:
+            # Short video with no detections - might be normal for very short clips
+            print(f"[RetinaFace] WARNING: No faces detected in {total_frames} frames (short video), but continuing...")
+            # Return landmarks with None values - pipeline will handle it
+        
         return landmarks
