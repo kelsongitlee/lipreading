@@ -30,6 +30,11 @@ MANIFEST
 # PyTorch
 *.pth
 *.pt
+# exception: allow .pth and .pt files in face_alignment and face_detection folders
+!face_alignment-master/**/*.pth
+!face_alignment-master/**/*.pt
+!face_detection-master/**/*.pth
+!face_detection-master/**/*.pt
 
 # Jupyter Notebook
 .ipynb_checkpoints
