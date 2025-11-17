@@ -79,18 +79,32 @@ class AVSR(torch.nn.Module):
             transcription = transcription.replace("▁", " ").strip()
             
             # CRITICAL FIX: Detect and remove repeated sequences in transcription
-            # Check if transcription has excessive repetition (possible beam search loop)
+            # Only truncate if we see 3+ consecutive repetitions (definite loop)
+            # Single repetition might be valid (e.g., "the the calendar")
             transcription_words = transcription.split()
-            if len(transcription_words) > 20:
-                # Check for repeated 3-word sequences
+            if len(transcription_words) > 30:  # only check long transcriptions
+                max_repetitions = 0
+                current_repetition_start = -1
                 for i in range(len(transcription_words) - 6):
                     phrase1 = ' '.join(transcription_words[i:i+3])
                     phrase2 = ' '.join(transcription_words[i+3:i+6])
                     if phrase1 == phrase2:
-                        # Detected repetition - truncate at first repetition
-                        print(f"[MODEL] WARNING: Detected repeated text pattern in transcription, truncating at first repetition")
-                        transcription = ' '.join(transcription_words[:i+3])
-                        break
+                        if current_repetition_start == -1:
+                            current_repetition_start = i
+                        max_repetitions += 1
+                    else:
+                        # if we had repetitions but they stopped, check if we need to truncate
+                        if max_repetitions >= 3:  # only truncate if 3+ consecutive repetitions
+                            print(f"[MODEL] WARNING: Detected {max_repetitions} consecutive repeated text patterns (definite loop), truncating at first repetition")
+                            transcription = ' '.join(transcription_words[:current_repetition_start+3])
+                            break
+                        max_repetitions = 0
+                        current_repetition_start = -1
+                
+                # also check at end of loop
+                if max_repetitions >= 3:
+                    print(f"[MODEL] WARNING: Detected {max_repetitions} consecutive repeated text patterns at end (definite loop), truncating")
+                    transcription = ' '.join(transcription_words[:current_repetition_start+3])
         
         return transcription.replace("<eos>", "")
     
