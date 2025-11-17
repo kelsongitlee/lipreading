@@ -65,21 +65,14 @@ class AVSR(torch.nn.Module):
                 # video-only mode - encode takes only x (no aux_x parameter)
                 enc_feats = self.model.encode(data.to(self.device))  # type: ignore
             
-            # CRITICAL FIX: For long videos, set maxlenratio to prevent infinite loops
-            # For videos longer than 30 seconds (~750 frames @ 25fps), limit output length
-            # maxlenratio=2.0 means max output tokens = 2x input frames (reasonable for speech)
-            # For very long videos, set absolute max to prevent "nominee nominee nominee..." loops
-            input_length = enc_feats.shape[0] if len(enc_feats.shape) > 1 else len(enc_feats)
-            if input_length > 750:  # ~30 seconds @ 25fps
-                # For long videos: use absolute max length (500 tokens) to prevent loops
-                maxlenratio = -500.0  # negative means absolute max length
-                print(f"[MODEL] Long video detected ({input_length} frames), using maxlenratio={maxlenratio} to prevent loops")
-            else:
-                # For normal videos: use 2x input length (reasonable for speech)
-                maxlenratio = 2.0
+            # CRITICAL FIX: Use maxlenratio=0.0 for automatic end detection
+            # maxlenratio=0.0 uses end-detect function to automatically find maximum hypothesis lengths
+            # This prevents GPU memory issues while still detecting end-of-sequence properly
+            # For long videos, maxlenratio=0.0 will use input_length as max (but with end detection)
+            maxlenratio = 0.0  # use automatic end detection (prevents GPU memory issues)
             
-            # Call beam_search with maxlenratio parameter to prevent infinite loops
-            # PyTorch modules' __call__ forwards to forward() which accepts maxlenratio
+            # Call beam_search with maxlenratio=0.0 for automatic end detection
+            # This prevents infinite loops while avoiding GPU memory issues
             nbest_hyps = self.beam_search(enc_feats, maxlenratio=maxlenratio)
             nbest_hyps = [h.asdict() for h in nbest_hyps[: min(len(nbest_hyps), 1)]]
             transcription = add_results_to_json(nbest_hyps, self.token_list)
