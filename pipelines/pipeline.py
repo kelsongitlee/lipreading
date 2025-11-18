@@ -81,7 +81,7 @@ class InferencePipeline(torch.nn.Module):
         return transcript
     
     def forward_with_accurate_alignment(self, data_filename, landmarks_filename=None, video_fps=25.0, 
-                                         beam_size=None, lm_weight=None, ctc_weight=None, penalty=None):
+                                         beam_size=None, lm_weight=None, ctc_weight=None, penalty=None, skip_alignment=False):
         """
         Process video using EXACT same preprocessing as forward() (infer()) for 100% accuracy.
         Then get word timestamps separately using the accurate transcription.
@@ -135,12 +135,20 @@ class InferencePipeline(torch.nn.Module):
         # Get accurate transcription using infer() (same as forward())
         transcription = self.model.infer(data)
         
-        # Now get word timestamps using the accurate transcription
-        alignment_result = self.model.get_word_timestamps_from_transcription(transcription, data, video_fps)
-        
-        # restore original beam search if we modified it
+        # restore original beam search if we modified it (do this BEFORE alignment to save time)
         if original_beam_search is not None:
             self.model.beam_search = original_beam_search
+        
+        # Skip alignment for real-time mode (saves significant processing time)
+        if skip_alignment:
+            return {
+                'transcription': transcription,  # 100% accurate (from infer())
+                'word_timestamps': [],  # Empty - not needed for real-time
+                'frame_alignments': []
+            }
+        
+        # Now get word timestamps using the accurate transcription (only for upload mode)
+        alignment_result = self.model.get_word_timestamps_from_transcription(transcription, data, video_fps)
         
         return {
             'transcription': transcription,  # 100% accurate (from infer())
