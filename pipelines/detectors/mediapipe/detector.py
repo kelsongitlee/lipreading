@@ -19,20 +19,28 @@ class LandmarksDetector:
         self.full_range_detector = self.mp_face_detection.FaceDetection(min_detection_confidence=0.5, model_selection=1)
 
     def __call__(self, filename):
+        print(f"[MediaPipe __call__] Processing video: {filename}")
         video_frames = torchvision.io.read_video(filename, pts_unit='sec')[0].numpy()
+        print(f"[MediaPipe __call__] Loaded {len(video_frames)} frames")
+        
         landmarks = self.detect(video_frames, self.full_range_detector)
         if all(element is None for element in landmarks):
+            print(f"[MediaPipe __call__] Full range detector found no faces, trying short range...")
             landmarks = self.detect(video_frames, self.short_range_detector)
+            
             # Check if we detected any faces at all
             detected_count = sum(1 for l in landmarks if l is not None)
             total_frames = len(landmarks)
             
             if detected_count == 0:
-                # No faces detected in any frame - this is an error
-                raise AssertionError(f"Cannot detect any frames in the video ({total_frames} frames processed)")
+                # No faces detected - return list of None values (like RetinaFace does)
+                print(f"[MediaPipe __call__] WARNING: No faces detected in {total_frames} frames, returning None list")
+                return landmarks  # Return list of None values, don't raise error
             elif detected_count < total_frames * 0.3:
                 # Less than 30% of frames have faces - likely poor quality
-                print(f"[MediaPipe] WARNING: Only {detected_count}/{total_frames} frames detected ({detected_count/total_frames*100:.1f}%)")
+                print(f"[MediaPipe __call__] WARNING: Only {detected_count}/{total_frames} frames detected ({detected_count/total_frames*100:.1f}%)")
+        
+        print(f"[MediaPipe __call__] Returning landmarks list")
         return landmarks
 
     def detect(self, video_frames, detector):
