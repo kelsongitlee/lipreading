@@ -23,16 +23,27 @@ class LandmarksDetector:
         landmarks = self.detect(video_frames, self.full_range_detector)
         if all(element is None for element in landmarks):
             landmarks = self.detect(video_frames, self.short_range_detector)
-            assert any(l is not None for l in landmarks), "Cannot detect any frames in the video"
+            # Check if we detected any faces at all
+            detected_count = sum(1 for l in landmarks if l is not None)
+            total_frames = len(landmarks)
+            
+            if detected_count == 0:
+                # No faces detected in any frame - this is an error
+                raise AssertionError(f"Cannot detect any frames in the video ({total_frames} frames processed)")
+            elif detected_count < total_frames * 0.3:
+                # Less than 30% of frames have faces - likely poor quality
+                print(f"[MediaPipe] WARNING: Only {detected_count}/{total_frames} frames detected ({detected_count/total_frames*100:.1f}%)")
         return landmarks
 
     def detect(self, video_frames, detector):
         landmarks = []
-        for frame in video_frames:
+        detected_frames = 0
+        for frame_idx, frame in enumerate(video_frames):
             results = detector.process(frame)
             if not results.detections:
                 landmarks.append(None)
                 continue
+            detected_frames += 1
             face_points = []
             for idx, detected_faces in enumerate(results.detections):
                 max_id, max_size = 0, 0
@@ -54,4 +65,9 @@ class LandmarksDetector:
                     ]
                 face_points.append(lmx)
             landmarks.append(np.array(face_points[max_id]))
+        
+        # Debug output
+        print(f"[MediaPipe] Detected faces in {detected_frames}/{len(video_frames)} frames ({detected_frames/len(video_frames)*100:.1f}%)")
+        
         return landmarks
+
