@@ -61,36 +61,28 @@ class VideoProcess:
         self.convert_gray = convert_gray
 
     def __call__(self, video, landmarks):
+        print(f"[DEBUG __call__] Called with video: {len(video)} frames, landmarks type: {type(landmarks)}")
         # Pre-process landmarks: interpolate frames that are not detected
         preprocessed_landmarks = self.interpolate_landmarks(landmarks)
-        # Exclude corner cases: no landmark in all frames or number of frames is less than window length
-        if not preprocessed_landmarks or len(preprocessed_landmarks) < self.window_margin:
+        # Exclude corner cases: no landmark in all frames
+        if not preprocessed_landmarks:
+            print(f"[DEBUG __call__] preprocessed_landmarks is None/empty, returning None")
             return
         # Affine transformation and crop patch
         sequence = self.crop_patch(video, preprocessed_landmarks)
-        assert sequence is not None, f"cannot crop a patch from {filename}."
+        assert sequence is not None, f"cannot crop a patch from video."
         return sequence
 
 
     def crop_patch(self, video, landmarks):
-        print(f"[DEBUG crop_patch] Starting crop_patch with {len(video)} frames, landmarks type: {type(landmarks)}")
-        if landmarks is None:
-            print(f"[DEBUG crop_patch] ERROR: landmarks is None!")
-            raise ValueError("landmarks parameter is None")
-        print(f"[DEBUG crop_patch] landmarks length: {len(landmarks)}")
+        print(f"[DEBUG crop_patch] Starting with {len(video)} frames, landmarks type: {type(landmarks)}, len: {len(landmarks)}")
         
         sequence = []
         for frame_idx, frame in enumerate(video):
             window_margin = min(self.window_margin // 2, frame_idx, len(landmarks) - 1 - frame_idx)
             
             # Get landmarks in window, filtering out None values
-            try:
-                window_landmarks = [landmarks[x] for x in range(frame_idx - window_margin, frame_idx + window_margin + 1) if landmarks[x] is not None]
-            except Exception as e:
-                print(f"[DEBUG crop_patch] ERROR at frame {frame_idx}: {type(e).__name__}: {e}")
-                print(f"[DEBUG crop_patch] window_margin={window_margin}, range=({frame_idx - window_margin}, {frame_idx + window_margin + 1})")
-                print(f"[DEBUG crop_patch] landmarks type: {type(landmarks)}, len: {len(landmarks) if landmarks else 'N/A'}")
-                raise
+            window_landmarks = [landmarks[x] for x in range(frame_idx - window_margin, frame_idx + window_margin + 1) if landmarks[x] is not None]
             
             # If no valid landmarks in window, skip this frame
             if not window_landmarks:
@@ -102,14 +94,28 @@ class VideoProcess:
             patch = cut_patch(transformed_frame, transformed_landmarks[self.start_idx:self.stop_idx], self.crop_height//2, self.crop_width//2,)
             sequence.append(patch)
         
-        print(f"[DEBUG crop_patch] Completed crop_patch, sequence length: {len(sequence)}")
+        print(f"[DEBUG crop_patch] Completed, sequence length: {len(sequence)}")
         return np.array(sequence)
 
 
     def interpolate_landmarks(self, landmarks):
-        valid_frames_idx = [idx for idx, lm in enumerate(landmarks) if lm is not None]
+        print(f"[DEBUG interpolate] Called with landmarks type: {type(landmarks)}")
+        
+        if landmarks is None:
+            print(f"[DEBUG interpolate] landmarks is None, returning None")
+            return None
+            
+        print(f"[DEBUG interpolate] landmarks length: {len(landmarks)}")
+        
+        try:
+            valid_frames_idx = [idx for idx, lm in enumerate(landmarks) if lm is not None]
+        except TypeError as e:
+            print(f"[DEBUG interpolate] ERROR: Cannot iterate landmarks: {e}")
+            print(f"[DEBUG interpolate] landmarks value: {landmarks}")
+            raise
 
         if not valid_frames_idx:
+            print(f"[DEBUG interpolate] No valid frames, returning None")
             return None
 
         for idx in range(1, len(valid_frames_idx)):
@@ -124,23 +130,24 @@ class VideoProcess:
             landmarks[valid_frames_idx[-1]:] = [landmarks[valid_frames_idx[-1]]] * (len(landmarks) - valid_frames_idx[-1])
 
         assert all(lm is not None for lm in landmarks), "not every frame has landmark"
-
+        
+        print(f"[DEBUG interpolate] Completed successfully")
         return landmarks
 
 
-    def affine_transform(self, frame, landmarks, reference, grayscale=True,
+    def affine_transform(self, frame, landmarks, reference, grayscale=False,
                          target_size=(256, 256), reference_size=(256, 256), stable_points=(28, 33, 36, 39, 42, 45, 48, 54),
                          interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
         if grayscale:
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        stable_reference = self.get_stable_reference(reference, stable_points, reference_size, target_size)
+        stable_reference = self.get_stable_reference(reference, reference_size, target_size, stable_points)
         transform = self.estimate_affine_transform(landmarks, stable_points, stable_reference)
         transformed_frame, transformed_landmarks = self.apply_affine_transform(frame, landmarks, transform, target_size, interpolation, border_mode, border_value)
 
         return transformed_frame, transformed_landmarks
 
 
-    def get_stable_reference(self, reference, stable_points, reference_size, target_size):
+    def get_stable_reference(self, reference, reference_size, target_size, stable_points):
         stable_reference = np.vstack([reference[x] for x in stable_points])
         stable_reference[:, 0] -= (reference_size[0] - target_size[0]) / 2.0
         stable_reference[:, 1] -= (reference_size[1] - target_size[1]) / 2.0
