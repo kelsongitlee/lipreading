@@ -76,7 +76,14 @@ class VideoProcess:
         sequence = []
         for frame_idx, frame in enumerate(video):
             window_margin = min(self.window_margin // 2, frame_idx, len(landmarks) - 1 - frame_idx)
-            smoothed_landmarks = np.mean([landmarks[x] for x in range(frame_idx - window_margin, frame_idx + window_margin + 1)], axis=0)
+            # Get landmarks in window, filtering out None values
+            window_landmarks = [landmarks[x] for x in range(frame_idx - window_margin, frame_idx + window_margin + 1) if landmarks[x] is not None]
+            
+            # If no valid landmarks in window, skip this frame
+            if not window_landmarks:
+                continue
+                
+            smoothed_landmarks = np.mean(window_landmarks, axis=0)
             smoothed_landmarks += landmarks[frame_idx].mean(axis=0) - smoothed_landmarks.mean(axis=0)
             transformed_frame, transformed_landmarks = self.affine_transform(frame,smoothed_landmarks,self.reference,grayscale=self.convert_gray)
             patch = cut_patch(transformed_frame, transformed_landmarks[self.start_idx:self.stop_idx], self.crop_height//2, self.crop_width//2,)
